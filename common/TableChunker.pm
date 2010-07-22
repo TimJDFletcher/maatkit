@@ -72,7 +72,9 @@ my %real_types = map { $_ => 1 }
 #   * exact           (optional) bool: Try to support exact chunk sizes
 #                     (may still chunk fuzzily)
 # Optional arguments
-#   * chunkable_column  coderef: return true if column is chunkable
+#   * hex_chunking  bool: chunk cols with all hex data, reqs dbh and db args
+#   * dbh           dbh: used for chunk_hex
+#   * db            scalar: db name, unquoted, used for chunk_hex
 # Returns an array:
 #   whether the table can be chunked exactly, if requested (zero otherwise)
 #   arrayref of columns that support chunking
@@ -82,6 +84,8 @@ sub find_chunk_columns {
       die "I need a $arg argument" unless $args{$arg};
    }
    my $tbl_struct = $args{tbl_struct};
+   my ($dbh, $db) = @args{qw(dbh db)};
+   my $db_tbl     = $db ? $self->{Quoter}->quote($db, $tbl_struct->{name}) : "";
 
    # See if there's an index that will support chunking.
    my @possible_indexes;
@@ -104,29 +108,52 @@ sub find_chunk_columns {
       join(', ', map { $_->{name} } @possible_indexes));
 
    # Build list of chunkable columns.
-   my $callback        = $args{chunkable_column};
    my $can_chunk_exact = 0;
    my @candidate_cols;
    foreach my $index ( @possible_indexes ) { 
-      my $col = $index->{cols}->[0];
+      my $col      = $index->{cols}->[0];
+      my $col_type = $tbl_struct->{type_for}->{$col};
 
-      # Accept only integer or real number type columns.
-      my $chunkable = $int_types{$tbl_struct->{type_for}->{$col}}
-                      || $real_types{$tbl_struct->{type_for}->{$col}} ? 1 : 0;
+      # Prefer integer or real number type columns.
+      my $chunkable  = $int_types{$col_type} || $real_types{$col_type} ? 1 : 0;
 
-      # Give caller a chance to override whether the col is chunkable or not.
-      if ( $callback ) {
-         $chunkable = $callback->(
-            column      => $col,
-            column_type => $tbl_struct->{type_for}->{$col},
-            index       => $index,
-            chunkable   => $chunkable,
-         );
+      # In the future this will help the caller know if a char column is
+      # chunkable as hex or as char.
+      my $chunk_type = $chunkable ? "numeric" : undef;
+
+      # If given a dbh and db and col isn't int/real number, see if
+      # it's a special chunkable type.
+      if ( !$chunkable && $dbh && $db_tbl ) {
+
+         # Hex chunking: check that columns are just 0-9a-fA-F.
+         if ( $col_type =~ m/char/i && $args{hex_chunking} ) {
+            my $sql = "SELECT `$col` FROM $db_tbl WHERE `$col` IS NOT NULL "
+                    . "LIMIT 100";
+            MKDEBUG && _d($dbh, $sql);
+            my $rows = $dbh->selectcol_arrayref($sql);
+            if ( $rows ) {
+               $chunkable = 1;
+               foreach my $row ( @$rows ) {
+                  $row =~ s/^0x//;
+                  if ( $row !~ m/[0-9a-fA-F]+$/ ) {
+                     MKDEBUG && _d("Row is not hex:", $row);
+                     $chunkable = 0;
+                     last;
+                  }
+               }
+               $chunk_type = "hex" if $chunkable;
+            }
+         }
       }
 
       # Save the candidate column and its index if it's chunkable.
-      push @candidate_cols, { column => $col, index => $index->{name} }
-         if $chunkable;
+      if ( $chunkable ) {
+         push @candidate_cols, {
+            column => $col,
+            index  => $index->{name},
+            type   => $chunk_type,
+         };
+      }
    }
 
    $can_chunk_exact = 1 if $args{exact} && scalar @candidate_cols;

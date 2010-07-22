@@ -27,7 +27,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 78;
+   plan tests => 80;
 }
 
 $sb->create_dbs($dbh, ['test']);
@@ -42,17 +42,18 @@ $t = $p->parse( load_file('common/t/samples/sakila.film.sql') );
 is_deeply(
    [ $c->find_chunk_columns(tbl_struct=>$t) ],
    [ 0,
-     { column => 'film_id', index => 'PRIMARY' },
-     { column => 'language_id', index => 'idx_fk_language_id' },
+     { column => 'film_id', index => 'PRIMARY', type => 'numeric' },
+     { column => 'language_id', index => 'idx_fk_language_id',
+       type => 'numeric' },
      { column => 'original_language_id',
-       index => 'idx_fk_original_language_id' },
+       index => 'idx_fk_original_language_id', type => 'numeric' },
    ],
    'Found chunkable columns on sakila.film',
 );
 
 is_deeply(
    [ $c->find_chunk_columns(tbl_struct=>$t, exact => 1) ],
-   [ 1, { column => 'film_id', index => 'PRIMARY' } ],
+   [ 1, { column => 'film_id', index => 'PRIMARY', type => 'numeric' } ],
    'Found exact chunkable columns on sakila.film',
 );
 
@@ -77,10 +78,11 @@ $t = $p->parse( load_file('common/t/samples/pk_not_first.sql') );
 is_deeply(
    [ $c->find_chunk_columns(tbl_struct=>$t) ],
    [ 0,
-     { column => 'film_id', index => 'PRIMARY' },
-     { column => 'language_id', index => 'idx_fk_language_id' },
+     { column => 'film_id', index => 'PRIMARY', type => 'numeric' },
+     { column => 'language_id', index => 'idx_fk_language_id',
+       type => 'numeric' },
      { column => 'original_language_id',
-        index => 'idx_fk_original_language_id' },
+        index => 'idx_fk_original_language_id', type => 'numeric' },
    ],
    'PK column is first',
 );
@@ -600,8 +602,8 @@ is_deeply(
    \@candidates,
    [
       0,
-      { column => 'id',    index => 'PRIMARY'  },
-      { column => 'foo',   index => 'uidx_foo' },
+      { column => 'id',    index => 'PRIMARY', type => 'numeric'  },
+      { column => 'foo',   index => 'uidx_foo', type => 'numeric' },
    ],
    'find_chunk_columns() returns col and idx candidates'
 );
@@ -1059,15 +1061,38 @@ $sb->load_file('master', "common/t/samples/hex-chunking.sql");
 $t = $p->parse( $du->get_create_table($dbh, $q, 'hex', 't') );
 
 is_deeply(
-   [ $c->find_chunk_columns(tbl_struct=>$t) ],
+   [ $c->find_chunk_columns(tbl_struct=>$t, dbh=>$dbh, db=>'hex') ],
    [ 0 ],
-   "Hex col not chunkable without callback"
+   "Hex col not chunkable without hex_chunk"
 );
 
 is_deeply(
-   [ $c->find_chunk_columns(tbl_struct=>$t, callback=>sub { return 1 }) ],
+   [ $c->find_chunk_columns(tbl_struct=>$t, dbh=>$dbh, db=>'hex',
+      hex_chunking=>1) ],
+   [ 0,
+     { column => 'x', index => 'x', type => 'hex'},
+   ],
+   "Hex col chunkable with hex_chunk"
+);
+
+$dbh->do("insert into hex.t values ('0xabcd')");
+
+is_deeply(
+   [ $c->find_chunk_columns(tbl_struct=>$t, dbh=>$dbh, db=>'hex',
+      hex_chunking=>1) ],
+   [ 0,
+     { column => 'x', index => 'x', type => 'hex' },
+   ],
+   "0x prefixed hex data chunkable"
+);
+
+$dbh->do("insert into hex.t values ('103d0z')");
+
+is_deeply(
+   [ $c->find_chunk_columns(tbl_struct=>$t, dbh=>$dbh, db=>'hex',
+      hex_chunking=>1) ],
    [ 0 ],
-   "Hex col chunkable when find_chunk_columns() calls callback"
+   "Non-hex data not chunkable"
 );
 
 # #############################################################################
