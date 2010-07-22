@@ -27,7 +27,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 76;
+   plan tests => 78;
 }
 
 $sb->create_dbs($dbh, ['test']);
@@ -1050,6 +1050,24 @@ chunk_it(
    zero_chunk => 1,
    chunks     => [qw(1=1)],
    msg        => 'Single zero row'
+);
+
+# #############################################################################
+# Issue 808: Make mk-table-* treat hex data as numeric for chunking
+# #############################################################################
+$sb->load_file('master', "common/t/samples/hex-chunking.sql");
+$t = $p->parse( $du->get_create_table($dbh, $q, 'hex', 't') );
+
+is_deeply(
+   [ $c->find_chunk_columns(tbl_struct=>$t) ],
+   [ 0 ],
+   "Hex col not chunkable without callback"
+);
+
+is_deeply(
+   [ $c->find_chunk_columns(tbl_struct=>$t, callback=>sub { return 1 }) ],
+   [ 0 ],
+   "Hex col chunkable when find_chunk_columns() calls callback"
 );
 
 # #############################################################################

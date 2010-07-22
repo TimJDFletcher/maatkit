@@ -71,6 +71,8 @@ my %real_types = map { $_ => 1 }
 #   * table_struct    Hashref returned from TableParser::parse
 #   * exact           (optional) bool: Try to support exact chunk sizes
 #                     (may still chunk fuzzily)
+# Optional arguments
+#   * chunkable_column  coderef: return true if column is chunkable
 # Returns an array:
 #   whether the table can be chunked exactly, if requested (zero otherwise)
 #   arrayref of columns that support chunking
@@ -101,15 +103,24 @@ sub find_chunk_columns {
    MKDEBUG && _d('Possible chunk indexes in order:',
       join(', ', map { $_->{name} } @possible_indexes));
 
-   # Build list of candidate chunk columns.   
+   # Build list of chunkable columns.
+   my $callback        = $args{chunkable_column};
    my $can_chunk_exact = 0;
    my @candidate_cols;
    foreach my $index ( @possible_indexes ) { 
       my $col = $index->{cols}->[0];
 
-      # Accept only integer or real number type columns.
-      next unless ( $int_types{$tbl_struct->{type_for}->{$col}}
-                    || $real_types{$tbl_struct->{type_for}->{$col}} );
+      if ( $callback ) {
+         # Let caller determine if column is chunkable.  Caller may do
+         # something like seeing if char col is all hex data which can
+         # be converted to numbers for chunking.
+         next unless $callback->($index);
+      }
+      else {
+         # Accept only integer or real number type columns.
+         next unless ( $int_types{$tbl_struct->{type_for}->{$col}}
+                       || $real_types{$tbl_struct->{type_for}->{$col}} );
+      }
 
       # Save the candidate column and its index.
       push @candidate_cols, { column => $col, index => $index->{name} };
