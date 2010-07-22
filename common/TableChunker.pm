@@ -110,20 +110,23 @@ sub find_chunk_columns {
    foreach my $index ( @possible_indexes ) { 
       my $col = $index->{cols}->[0];
 
+      # Accept only integer or real number type columns.
+      my $chunkable = $int_types{$tbl_struct->{type_for}->{$col}}
+                      || $real_types{$tbl_struct->{type_for}->{$col}} ? 1 : 0;
+
+      # Give caller a chance to override whether the col is chunkable or not.
       if ( $callback ) {
-         # Let caller determine if column is chunkable.  Caller may do
-         # something like seeing if char col is all hex data which can
-         # be converted to numbers for chunking.
-         next unless $callback->($index);
-      }
-      else {
-         # Accept only integer or real number type columns.
-         next unless ( $int_types{$tbl_struct->{type_for}->{$col}}
-                       || $real_types{$tbl_struct->{type_for}->{$col}} );
+         $chunkable = $callback->(
+            column      => $col,
+            column_type => $tbl_struct->{type_for}->{$col},
+            index       => $index,
+            chunkable   => $chunkable,
+         );
       }
 
-      # Save the candidate column and its index.
-      push @candidate_cols, { column => $col, index => $index->{name} };
+      # Save the candidate column and its index if it's chunkable.
+      push @candidate_cols, { column => $col, index => $index->{name} }
+         if $chunkable;
    }
 
    $can_chunk_exact = 1 if $args{exact} && scalar @candidate_cols;
