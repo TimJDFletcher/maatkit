@@ -158,11 +158,8 @@ sub find_chunk_columns {
 
    $can_chunk_exact = 1 if $args{exact} && scalar @candidate_cols;
 
-   if ( MKDEBUG ) {
-      my $chunk_type = $args{exact} ? 'Exact' : 'Inexact';
-      _d($chunk_type, 'chunkable:',
-         join(', ', map { "$_->{column} on $_->{index}" } @candidate_cols));
-   }
+   MKDEBUG && _d(($args{exact} ? 'Exact' : 'Inexact'), 'chunkable:',
+      join(', ', map { "$_->{column} on $_->{index}" } @candidate_cols));
 
    # Order the candidates by their original column order.
    # Put the PK's first column first, if it's a candidate.
@@ -431,6 +428,7 @@ sub get_first_chunkable_column {
    my ($exact, @cols) = $self->find_chunk_columns(%args);
    my $col = $cols[0]->{column};
    my $idx = $cols[0]->{index};
+   my $typ = $cols[0]->{type};
 
    # Wanted/preferred chunk column and index.  Caller only gets what
    # they want, though, if it results in a sane col/index pair.
@@ -446,6 +444,7 @@ sub get_first_chunkable_column {
             # The wanted column is chunkable with the wanted index.
             $col = $wanted_col;
             $idx = $wanted_idx;
+            $typ = $chunkable_col->{type};
             last;
          }
       }
@@ -459,6 +458,7 @@ sub get_first_chunkable_column {
             # the defaults.
             $col = $wanted_col;
             $idx = $chunkable_col->{index};
+            $typ = $chunkable_col->{type};
             last;
          }
       }
@@ -473,13 +473,14 @@ sub get_first_chunkable_column {
             # the defaults.
             $col = $chunkable_col->{column};
             $idx = $wanted_idx;
+            $typ = $chunkable_col->{type};
             last;
          }
       }
    }
 
-   MKDEBUG && _d('First chunkable col/index:', $col, $idx);
-   return $col, $idx;
+   MKDEBUG && _d('First chunkable col/index:', $col, $idx, $typ);
+   return $col, $idx, $typ;
 }
 
 # Convert a size in rows or bytes to a number of rows in the table, using SHOW

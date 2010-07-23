@@ -927,7 +927,7 @@ $t = $p->parse( load_file('common/t/samples/sakila.film.sql') );
 
 is_deeply(
    [ $c->get_first_chunkable_column(tbl_struct=>$t) ],
-   [ 'film_id', 'PRIMARY' ],
+   [ 'film_id', 'PRIMARY', 'numeric' ],
    "get_first_chunkable_column(), default column and index"
 );
 
@@ -936,7 +936,7 @@ is_deeply(
       tbl_struct   => $t,
       chunk_column => 'language_id',
    ) ],
-   [ 'language_id', 'idx_fk_language_id' ],
+   [ 'language_id', 'idx_fk_language_id', 'numeric' ],
    "get_first_chunkable_column(), preferred column"
 );
 
@@ -945,7 +945,7 @@ is_deeply(
       tbl_struct  => $t,
       chunk_index => 'idx_fk_original_language_id',
    ) ],
-   [ 'original_language_id', 'idx_fk_original_language_id' ],
+   [ 'original_language_id', 'idx_fk_original_language_id', 'numeric' ],
    "get_first_chunkable_column(), preferred index"
 );
 
@@ -955,7 +955,7 @@ is_deeply(
       chunk_column => 'language_id',
       chunk_index  => 'idx_fk_language_id',
    ) ],
-   [ 'language_id', 'idx_fk_language_id' ],
+   [ 'language_id', 'idx_fk_language_id', 'numeric' ],
    "get_first_chunkable_column(), preferred column and index"
 );
 
@@ -965,7 +965,7 @@ is_deeply(
       chunk_column => 'film_id',
       chunk_index  => 'idx_fk_language_id',
    ) ],
-   [ 'film_id', 'PRIMARY' ],
+   [ 'film_id', 'PRIMARY', 'numeric' ],
    "get_first_chunkable_column(), bad preferred column and index"
 );
 
@@ -974,7 +974,7 @@ $t = $p->parse( load_file('common/t/samples/t1.sql') );
 
 is_deeply(
    [ $c->get_first_chunkable_column(tbl_struct=>$t) ],
-   [undef, undef],
+   [undef, undef, undef],
    "get_first_chunkable_column(), no chunkable columns"
 );
 
@@ -1014,7 +1014,7 @@ my (undef,$output) = $dbh->selectrow_array("show create table test.t1");
 $t = $p->parse($output);
 is_deeply(
    [ $c->get_first_chunkable_column(tbl_struct=>$t) ],
-   [qw(a a)],
+   [qw(a a numeric)],
    "test.t1 chunkable col"
 );
 
