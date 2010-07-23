@@ -27,7 +27,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 80;
+   plan tests => 81;
 }
 
 $sb->create_dbs($dbh, ['test']);
@@ -999,13 +999,14 @@ sub chunk_it {
       tbl_struct => $args{tbl_struct},
       chunk_size => $args{chunk_size} || 100,
       zero_chunk => $args{zero_chunk},
+      chunk_type => $args{chunk_type},
       %params,
    );
    is_deeply(
       \@chunks,
       $args{chunks},
       $args{msg},
-   );
+   ) or print Dumper(\@chunks);
 }
 
 $dbh->do("alter table test.t1 add unique index (a)");
@@ -1093,6 +1094,25 @@ is_deeply(
       hex_chunking=>1) ],
    [ 0 ],
    "Non-hex data not chunkable"
+);
+
+$dbh->do("delete from hex.t where x='103d0z'");
+
+chunk_it(
+   dbh        => $dbh,
+   db         => 'hex',
+   tbl        => 't',
+   chunk_col  => 'x',
+   tbl_struct => $t,
+   chunk_size => 3,
+   chunk_type => 'hex',
+   chunks     => [
+      "`x` < CONV(124991954355, 10, 16)",
+      "`x` >= CONV(124991954355, 10, 16) AND `x` < CONV(249983864729, 10, 16)",
+      "`x` >= CONV(249983864729, 10, 16) AND `x` < CONV(374975775103, 10, 16)",
+      "`x` >= CONV(374975775103, 10, 16)",
+   ],
+   msg        => "Chunk hex col"
 );
 
 # #############################################################################

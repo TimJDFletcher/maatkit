@@ -203,6 +203,7 @@ sub find_chunk_columns {
 #   * chunk_size     scalar: requested size of each chunk
 #   * zero_chunk     bool: add an extra chunk for zero values (0, 00:00, etc.)
 # Optional arguments:
+#   * chunk_type     scalar: chunk type, like "hex"
 #   * exact          bool: use exact chunk_size if true else use approximates
 #   * tries          scalar: fetch up to this many rows to find a non-zero value
 # Returns a list of WHERE predicates like "`col` >= '10' AND `col` < '20'",
@@ -238,17 +239,22 @@ sub calculate_chunks {
 
    # Convert the given MySQL values to (Perl) numbers using some MySQL function.
    # E.g.: SELECT TIME_TO_SEC('12:34') == 45240.  
-   my $range_func = $self->range_func_for($col_type);
+   my $range_func = $self->range_func_for(
+      col_type   => $col_type,
+      chunk_type => $args{chunk_type},
+   );
    my ($start_point, $end_point);
    eval {
       $start_point = $self->value_to_number(
          value       => $args{min},
          column_type => $col_type,
+         chunk_type  => $args{chunk_type},
          dbh         => $dbh,
       );
       $end_point  = $self->value_to_number(
          value       => $args{max},
          column_type => $col_type,
+         chunk_type  => $args{chunk_type},
          dbh         => $dbh,
       );
    };
@@ -369,11 +375,11 @@ sub calculate_chunks {
          if ( $iter++ == 0 ) {
             push @chunks,
                ($have_zero_chunk ? "$col > 0 AND " : "")
-               ."$col < " . $q->quote_val($end);
+               ."$col < $end";
          }
          else {
             # The normal case is a chunk in the middle of the range somewhere.
-            push @chunks, "$col >= " . $q->quote_val($beg) . " AND $col < " . $q->quote_val($end);
+            push @chunks, "$col >= $beg AND $col < $end";
          }
       }
 
@@ -383,7 +389,7 @@ sub calculate_chunks {
       my $nullable = $args{tbl_struct}->{is_nullable}->{$args{chunk_col}};
       pop @chunks;
       if ( @chunks ) {
-         push @chunks, "$col >= " . $q->quote_val($beg);
+         push @chunks, "$col >= $beg";
       }
       else {
          push @chunks, $nullable ? "$col IS NOT NULL" : '1=1';
@@ -637,6 +643,8 @@ sub inject_chunks {
 #   * value       scalar: MySQL value to convert
 #   * column_type scalar: MySQL column type of the value
 #   * dbh         dbh
+# Optional arguments:
+#   * chunk_type  scalar: chunk type, like "hex" (default numeric)
 # Returns an integer or undef if the value isn't convertible
 # (e.g. date 0000-00-00 is not convertible).
 sub value_to_number {
@@ -647,7 +655,8 @@ sub value_to_number {
    }
    my $val = $args{value};
    my ($col_type, $dbh) = @args{@required_args};
-   MKDEBUG && _d('Converting MySQL', $col_type, $val);
+   my $chunk_type       = $args{chunk_type} || "numeric";
+   MKDEBUG && _d('Converting MySQL', $col_type, $val, $chunk_type);
 
    return unless defined $val;  # value is NULL
 
@@ -683,15 +692,25 @@ sub value_to_number {
       # to maintain just one kind of code, so I do it all with DATE_ADD().
       $num = $self->timestampdiff($dbh, $val);
    }
+   elsif ( $col_type =~ m/char/ && $chunk_type eq 'hex' ) {
+      $val =~ s/^0x//;
+      my $sql = "SELECT CONV(?, 16, 10)";
+      MKDEBUG && _d($dbh, $sql, $val);
+      my $sth = $dbh->prepare($sql);
+      $sth->execute($val);
+      ($num) = $sth->fetchrow_array();
+   }
    else {
-      die "I don't know how to chunk $col_type\n";
+      die "I don't know how to chunk $col_type";
    }
    MKDEBUG && _d('Converts to', $num);
    return $num;
 }
 
 sub range_func_for {
-   my ( $self, $col_type ) = @_;
+   my ( $self, %args ) = @_;
+   my $col_type   = $args{col_type};
+   my $chunk_type = $args{chunk_type} || "numeric";
    return unless $col_type;
    my $range_func;
    if ( $col_type =~ m/(?:int|year|float|double|decimal)$/ ) {
@@ -703,6 +722,12 @@ sub range_func_for {
    elsif ( $col_type eq 'datetime' ) {
       $range_func  = 'range_datetime';
    }
+   elsif ( $col_type =~ m/char/ && $chunk_type eq "hex" ) {
+      $range_func  = 'range_hex';
+   }
+   else {
+      die "There is no range function for $col_type";
+   }
    return $range_func;
 }
 
@@ -712,7 +737,7 @@ sub range_func_for {
 sub range_num {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
    my $end = min($max, $start + $interval);
-
+   my $q   = $self->{Quoter};
 
    # "Remove" scientific notation so the regex below does not make
    # 6.123456e+18 into 6.12345.
@@ -725,7 +750,7 @@ sub range_num {
    $end   =~ s/\.(\d{5}).*$/.$1/;
 
    if ( $end > $start ) {
-      return ( $start, $end );
+      return $q->quote_val($start), $q->quote_val($end);
    }
    else {
       die "Chunk size is too small: $end !> $start\n";
@@ -734,31 +759,39 @@ sub range_num {
 
 sub range_time {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT SEC_TO_TIME($start), SEC_TO_TIME(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_date {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT FROM_DAYS($start), FROM_DAYS(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_datetime {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT DATE_ADD('$EPOCH', INTERVAL $start SECOND), "
        . "DATE_ADD('$EPOCH', INTERVAL LEAST($max, $start + $interval) SECOND)";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_timestamp {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT FROM_UNIXTIME($start), FROM_UNIXTIME(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 # Returns the number of seconds between $EPOCH and the value, according to
@@ -787,6 +820,17 @@ sub timestampdiff {
    return $diff;
 }
 
+sub range_hex {
+   my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $end = min($max, $start + $interval);
+
+   if ( $end > $start ) {
+      return "CONV($start, 10, 16)", "CONV($end, 10, 16)";
+   }
+   else {
+      die "Chunk size is too small: $end !> $start\n";
+   }
+}
 
 # #############################################################################
 # End point validation.
