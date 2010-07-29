@@ -2110,7 +2110,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# VersionParser package 5266
+# VersionParser package 6667
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/VersionParser.pm
@@ -2147,6 +2147,36 @@ sub version_ge {
    my $result = $self->{$dbh} ge $self->parse($target) ? 1 : 0;
    MKDEBUG && _d($self->{$dbh}, 'ge', $target, ':', $result);
    return $result;
+}
+
+sub innodb_version {
+   my ( $self, $dbh ) = @_;
+   return unless $dbh;
+   my $innodb_version = "NO";
+
+   my ($innodb) =
+      grep { $_->{engine} =~ m/InnoDB/i }
+      map  {
+         my %hash;
+         @hash{ map { lc $_ } keys %$_ } = values %$_;
+         \%hash;
+      }
+      @{ $dbh->selectall_arrayref("SHOW ENGINES", {Slice=>{}}) };
+   if ( $innodb ) {
+      MKDEBUG && _d("InnoDB support:", $innodb->{support});
+      if ( $innodb->{support} =~ m/YES|DEFAULT/i ) {
+         my $vars = $dbh->selectrow_hashref(
+            "SHOW VARIABLES LIKE 'innodb_version'");
+         $innodb_version = !$vars ? "BUILTIN"
+                         :          ($vars->{Value} || $vars->{value});
+      }
+      else {
+         $innodb_version = $innodb->{support};  # probably DISABLED or NO
+      }
+   }
+
+   MKDEBUG && _d("InnoDB version:", $innodb_version);
+   return $innodb_version;
 }
 
 sub _d {
@@ -2470,7 +2500,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableChunker package 6732
+# TableChunker package 6758
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableChunker.pm
@@ -2514,6 +2544,8 @@ sub find_chunk_columns {
       die "I need a $arg argument" unless $args{$arg};
    }
    my $tbl_struct = $args{tbl_struct};
+   my ($dbh, $db) = @args{qw(dbh db)};
+   my $db_tbl     = $db ? $self->{Quoter}->quote($db, $tbl_struct->{name}) : "";
 
    my @possible_indexes;
    foreach my $index ( values %{ $tbl_struct->{keys} } ) {
@@ -2534,12 +2566,42 @@ sub find_chunk_columns {
    my $can_chunk_exact = 0;
    my @candidate_cols;
    foreach my $index ( @possible_indexes ) { 
-      my $col = $index->{cols}->[0];
+      my $col      = $index->{cols}->[0];
+      my $col_type = $tbl_struct->{type_for}->{$col};
 
-      next unless ( $int_types{$tbl_struct->{type_for}->{$col}}
-                    || $real_types{$tbl_struct->{type_for}->{$col}} );
+      my $chunkable  = $int_types{$col_type} || $real_types{$col_type} ? 1 : 0;
 
-      push @candidate_cols, { column => $col, index => $index->{name} };
+      my $chunk_type = $chunkable ? "numeric" : undef;
+
+      if ( !$chunkable && $dbh && $db_tbl ) {
+
+         if ( $col_type =~ m/char/i && $args{hex_chunking} ) {
+            my $sql = "SELECT `$col` FROM $db_tbl WHERE `$col` IS NOT NULL "
+                    . "LIMIT 100";
+            MKDEBUG && _d($dbh, $sql);
+            my $rows = $dbh->selectcol_arrayref($sql);
+            if ( $rows ) {
+               $chunkable = 1;
+               foreach my $row ( @$rows ) {
+                  $row =~ s/^0x//;
+                  if ( $row !~ m/[0-9a-fA-F]+$/ ) {
+                     MKDEBUG && _d("Row is not hex:", $row);
+                     $chunkable = 0;
+                     last;
+                  }
+               }
+               $chunk_type = "hex" if $chunkable;
+            }
+         }
+      }
+
+      if ( $chunkable ) {
+         push @candidate_cols, {
+            column => $col,
+            index  => $index->{name},
+            type   => $chunk_type,
+         };
+      }
    }
 
    $can_chunk_exact = 1 if $args{exact} && scalar @candidate_cols;
@@ -2598,17 +2660,22 @@ sub calculate_chunks {
    my $col_type = $args{tbl_struct}->{type_for}->{$args{chunk_col}};
    MKDEBUG && _d('chunk col type:', $col_type);
 
-   my $range_func = $self->range_func_for($col_type);
+   my $range_func = $self->range_func_for(
+      col_type   => $col_type,
+      chunk_type => $args{chunk_type},
+   );
    my ($start_point, $end_point);
    eval {
       $start_point = $self->value_to_number(
          value       => $args{min},
          column_type => $col_type,
+         chunk_type  => $args{chunk_type},
          dbh         => $dbh,
       );
       $end_point  = $self->value_to_number(
          value       => $args{max},
          column_type => $col_type,
+         chunk_type  => $args{chunk_type},
          dbh         => $dbh,
       );
    };
@@ -2690,17 +2757,17 @@ sub calculate_chunks {
          if ( $iter++ == 0 ) {
             push @chunks,
                ($have_zero_chunk ? "$col > 0 AND " : "")
-               ."$col < " . $q->quote_val($end);
+               ."$col < $end";
          }
          else {
-            push @chunks, "$col >= " . $q->quote_val($beg) . " AND $col < " . $q->quote_val($end);
+            push @chunks, "$col >= $beg AND $col < $end";
          }
       }
 
       my $nullable = $args{tbl_struct}->{is_nullable}->{$args{chunk_col}};
       pop @chunks;
       if ( @chunks ) {
-         push @chunks, "$col >= " . $q->quote_val($beg);
+         push @chunks, "$col >= $beg";
       }
       else {
          push @chunks, $nullable ? "$col IS NOT NULL" : '1=1';
@@ -2894,7 +2961,8 @@ sub value_to_number {
    }
    my $val = $args{value};
    my ($col_type, $dbh) = @args{@required_args};
-   MKDEBUG && _d('Converting MySQL', $col_type, $val);
+   my $chunk_type       = $args{chunk_type} || "numeric";
+   MKDEBUG && _d('Converting MySQL', $col_type, $val, $chunk_type);
 
    return unless defined $val;  # value is NULL
 
@@ -2920,15 +2988,25 @@ sub value_to_number {
    elsif ( $col_type eq 'datetime' ) {
       $num = $self->timestampdiff($dbh, $val);
    }
+   elsif ( $col_type =~ m/char/ && $chunk_type eq 'hex' ) {
+      $val =~ s/^0x//;
+      my $sql = "SELECT CONV(?, 16, 10)";
+      MKDEBUG && _d($dbh, $sql, $val);
+      my $sth = $dbh->prepare($sql);
+      $sth->execute($val);
+      ($num) = $sth->fetchrow_array();
+   }
    else {
-      die "I don't know how to chunk $col_type\n";
+      die "I don't know how to chunk $col_type";
    }
    MKDEBUG && _d('Converts to', $num);
    return $num;
 }
 
 sub range_func_for {
-   my ( $self, $col_type ) = @_;
+   my ( $self, %args ) = @_;
+   my $col_type   = $args{col_type};
+   my $chunk_type = $args{chunk_type} || "numeric";
    return unless $col_type;
    my $range_func;
    if ( $col_type =~ m/(?:int|year|float|double|decimal)$/ ) {
@@ -2940,13 +3018,19 @@ sub range_func_for {
    elsif ( $col_type eq 'datetime' ) {
       $range_func  = 'range_datetime';
    }
+   elsif ( $col_type =~ m/char/ && $chunk_type eq "hex" ) {
+      $range_func  = 'range_hex';
+   }
+   else {
+      die "There is no range function for $col_type";
+   }
    return $range_func;
 }
 
 sub range_num {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
    my $end = min($max, $start + $interval);
-
+   my $q   = $self->{Quoter};
 
    $start = sprintf('%.17f', $start) if $start =~ /e/;
    $end   = sprintf('%.17f', $end)   if $end   =~ /e/;
@@ -2955,7 +3039,7 @@ sub range_num {
    $end   =~ s/\.(\d{5}).*$/.$1/;
 
    if ( $end > $start ) {
-      return ( $start, $end );
+      return $q->quote_val($start), $q->quote_val($end);
    }
    else {
       die "Chunk size is too small: $end !> $start\n";
@@ -2964,31 +3048,39 @@ sub range_num {
 
 sub range_time {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT SEC_TO_TIME($start), SEC_TO_TIME(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_date {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT FROM_DAYS($start), FROM_DAYS(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_datetime {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT DATE_ADD('$EPOCH', INTERVAL $start SECOND), "
        . "DATE_ADD('$EPOCH', INTERVAL LEAST($max, $start + $interval) SECOND)";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub range_timestamp {
    my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $q   = $self->{Quoter};
    my $sql = "SELECT FROM_UNIXTIME($start), FROM_UNIXTIME(LEAST($max, $start + $interval))";
    MKDEBUG && _d($sql);
-   return $dbh->selectrow_array($sql);
+   my @vals = $dbh->selectrow_array($sql);
+   return map { $q->quote_val($_) } @vals;
 }
 
 sub timestampdiff {
@@ -3010,6 +3102,17 @@ sub timestampdiff {
    return $diff;
 }
 
+sub range_hex {
+   my ( $self, $dbh, $start, $interval, $max ) = @_;
+   my $end = min($max, $start + $interval);
+
+   if ( $end > $start ) {
+      return "CONV($start, 10, 16)", "CONV($end, 10, 16)";
+   }
+   else {
+      die "Chunk size is too small: $end !> $start\n";
+   }
+}
 
 
 
@@ -5029,7 +5132,8 @@ sub save_tbl_to_checksum {
          %args,
          chunk_column => $final_o->get('chunk-column'),
          chunk_index  => $final_o->get('chunk-index'),
-         tbl_struct => $struct,
+         tbl_struct   => $struct,
+         hex_chunking => $final_o->get('hex-chunking'),
       );
 
       my $index_hint;
@@ -7034,6 +7138,18 @@ than FNV1A_64.
 group: Help
 
 Show help and exit.
+
+=item --[no]hex-chunking
+
+default: yes
+
+Check and allow chunking columns with only hex data for L<"--chunk-size">.
+
+This option causes the tool to treat hex data as numeric for chunking.
+To determine if a column is a "hex column", the first 100 not-NULL rows
+are selected and examined for non-hex data.  An optional C<0x> prefix is
+allowed.  If all column values are hex (C<0-9a-fA-F>) then the column becomes
+a candidate for chunking.
 
 =item --ignore-columns
 

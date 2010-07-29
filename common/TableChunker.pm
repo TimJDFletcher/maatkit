@@ -826,6 +826,8 @@ sub range_hex {
    my $end = min($max, $start + $interval);
 
    if ( $end > $start ) {
+      $start =~ s/\.\d+$//;
+      $end   =~ s/\.\d+$//;
       return "CONV($start, 10, 16)", "CONV($end, 10, 16)";
    }
    else {

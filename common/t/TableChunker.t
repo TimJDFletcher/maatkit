@@ -1095,9 +1095,9 @@ is_deeply(
    [ 0 ],
    "Non-hex data not chunkable"
 );
-
+$dbh->do("delete from hex.t where x='0xabcd'");
 $dbh->do("delete from hex.t where x='103d0z'");
-
+print STDERR "----------------------------------------------- foo\n";
 chunk_it(
    dbh        => $dbh,
    db         => 'hex',
@@ -1114,9 +1114,26 @@ chunk_it(
    ],
    msg        => "Chunk hex col"
 );
+print STDERR "----------------------------------------------- bar\n";
+chunk_it(
+   dbh        => $dbh,
+   db         => 'hex',
+   tbl        => 't_prefix',
+   chunk_col  => 'x',
+   tbl_struct => $t,
+   chunk_size => 3,
+   chunk_type => 'hex',
+   chunks     => [
+      "`x` < CONV(136358310018, 10, 16)",
+      "`x` >= CONV(136358310018, 10, 16) AND `x` < CONV(272711825815, 10, 16)",
+      "`x` >= CONV(272711825815, 10, 16) AND `x` < CONV(409065341612, 10, 16)",
+      "`x` >= CONV(409065341612, 10, 16)",
+   ],
+   msg        => "Chunk hex col with 0x prefixes"
+);
 
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($dbh);
+# $sb->wipe_clean($dbh);
 exit;
