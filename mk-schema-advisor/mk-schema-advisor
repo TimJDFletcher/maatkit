@@ -25,7 +25,12 @@ our $DISTRIB = '@DISTRIB@';
 our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
-# VersionParser package 3186
+# VersionParser package 6667
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/VersionParser.pm
+#   trunk/common/t/VersionParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 package VersionParser;
 
@@ -59,6 +64,36 @@ sub version_ge {
    return $result;
 }
 
+sub innodb_version {
+   my ( $self, $dbh ) = @_;
+   return unless $dbh;
+   my $innodb_version = "NO";
+
+   my ($innodb) =
+      grep { $_->{engine} =~ m/InnoDB/i }
+      map  {
+         my %hash;
+         @hash{ map { lc $_ } keys %$_ } = values %$_;
+         \%hash;
+      }
+      @{ $dbh->selectall_arrayref("SHOW ENGINES", {Slice=>{}}) };
+   if ( $innodb ) {
+      MKDEBUG && _d("InnoDB support:", $innodb->{support});
+      if ( $innodb->{support} =~ m/YES|DEFAULT/i ) {
+         my $vars = $dbh->selectrow_hashref(
+            "SHOW VARIABLES LIKE 'innodb_version'");
+         $innodb_version = !$vars ? "BUILTIN"
+                         :          ($vars->{Value} || $vars->{value});
+      }
+      else {
+         $innodb_version = $innodb->{support};  # probably DISABLED or NO
+      }
+   }
+
+   MKDEBUG && _d("InnoDB version:", $innodb_version);
+   return $innodb_version;
+}
+
 sub _d {
    my ($package, undef, $line) = caller 0;
    @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
@@ -74,13 +109,14 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Quoter package 6549
+# Quoter package 6785
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Quoter.pm
 #   trunk/common/t/Quoter.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
+
 package Quoter;
 
 use strict;
@@ -90,7 +126,7 @@ use English qw(-no_match_vars);
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 sub new {
-   my ( $class ) = @_;
+   my ( $class, %args ) = @_;
    return bless {}, $class;
 }
 
@@ -151,21 +187,35 @@ sub join_quote {
 # ###########################################################################
 
 # ###########################################################################
-# TableParser package 4397
+# TableParser package 6770
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableParser.pm
+#   trunk/common/t/TableParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
+
 package TableParser;
 
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 sub new {
-   my ( $class ) = @_;
-   return bless {}, $class;
+   my ( $class, %args ) = @_;
+   my @required_args = qw(Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = { %args };
+   return bless $self, $class;
 }
-
 
 sub parse {
    my ( $self, $ddl, $opts ) = @_;
@@ -186,13 +236,16 @@ sub parse {
          . "enabled or SQL_QUOTE_SHOW_CREATE disabled?";
    }
 
+   my ($name)     = $ddl =~ m/CREATE (?:TEMPORARY )?TABLE\s+(`.+?`)/;
+   (undef, $name) = $self->{Quoter}->split_unquote($name) if $name;
+
    $ddl =~ s/(`[^`]+`)/\L$1/g;
 
    my $engine = $self->get_engine($ddl);
 
    my @defs   = $ddl =~ m/^(\s+`.*?),?$/gm;
    my @cols   = map { $_ =~ m/`([^`]+)`/ } @defs;
-   MKDEBUG && _d('Columns:', join(', ', @cols));
+   MKDEBUG && _d('Table cols:', join(', ', map { "`$_`" } @cols));
 
    my %def_for;
    @def_for{@cols} = @defs;
@@ -218,6 +271,7 @@ sub parse {
    my ($keys, $clustered_key) = $self->get_keys($ddl, $opts, \%is_nullable);
 
    return {
+      name           => $name,
       cols           => \@cols,
       col_posn       => { map { $cols[$_] => $_ } 0..$#cols },
       is_col         => { map { $_ => 1 } @cols },
@@ -299,27 +353,69 @@ sub find_possible_keys {
    }
 }
 
-sub table_exists {
-   my ( $self, $dbh, $db, $tbl, $q, $can_insert ) = @_;
-   my $result = 0;
+sub check_table {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh db tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $db, $tbl) = @args{@required_args};
+   my $q      = $self->{Quoter};
    my $db_tbl = $q->quote($db, $tbl);
-   my $sql    = "SHOW FULL COLUMNS FROM $db_tbl";
+   MKDEBUG && _d('Checking', $db_tbl);
+
+   my $sql = "SHOW TABLES FROM " . $q->quote($db)
+           . ' LIKE ' . $q->literal_like($tbl);
+   MKDEBUG && _d($sql);
+   my $row;
+   eval {
+      $row = $dbh->selectrow_arrayref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !$row->[0] || $row->[0] ne $tbl ) {
+      MKDEBUG && _d('Table does not exist');
+      return 0;
+   }
+
+   MKDEBUG && _d('Table exists; no privs to check');
+   return 1 unless $args{all_privs};
+
+   $sql = "SHOW FULL COLUMNS FROM $db_tbl";
    MKDEBUG && _d($sql);
    eval {
-      my $sth = $dbh->prepare($sql);
-      $sth->execute();
-      my @columns = @{$sth->fetchall_arrayref({})};
-      if ( $can_insert ) {
-         $result = grep { ($_->{Privileges} || '') =~ m/insert/ } @columns;
-      }
-      else {
-         $result = 1;
-      }
+      $row = $dbh->selectrow_hashref($sql);
    };
-   if ( MKDEBUG && $EVAL_ERROR ) {
-      _d($EVAL_ERROR);
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
    }
-   return $result;
+   if ( !scalar keys %$row ) {
+      MKDEBUG && _d('Table has no columns:', Dumper($row));
+      return 0;
+   }
+   my $privs = $row->{privileges} || $row->{Privileges};
+
+   $sql = "DELETE FROM $db_tbl LIMIT 0";
+   MKDEBUG && _d($sql);
+   eval {
+      $dbh->do($sql);
+   };
+   my $can_delete = $EVAL_ERROR ? 0 : 1;
+
+   MKDEBUG && _d('User privs on', $db_tbl, ':', $privs,
+      ($can_delete ? 'delete' : ''));
+
+   if ( !($privs =~ m/select/ && $privs =~ m/insert/ && $privs =~ m/update/
+          && $can_delete) ) {
+      MKDEBUG && _d('User does not have all privs');
+      return 0;
+   }
+
+   MKDEBUG && _d('User has all privs');
+   return 1;
 }
 
 sub get_engine {
@@ -340,7 +436,8 @@ sub get_keys {
 
       next KEY if $key =~ m/FOREIGN/;
 
-      MKDEBUG && _d('Parsed key:', $key);
+      my $key_ddl = $key;
+      MKDEBUG && _d('Parsed key:', $key_ddl);
 
       if ( $engine !~ m/MEMORY|HEAP/ ) {
          $key =~ s/USING HASH/USING BTREE/;
@@ -359,14 +456,14 @@ sub get_keys {
       my $unique = $key =~ m/PRIMARY|UNIQUE/ ? 1 : 0;
       my @cols;
       my @col_prefixes;
-      foreach my $col_def ( split(',', $cols) ) {
+      foreach my $col_def ( $cols =~ m/`[^`]+`(?:\(\d+\))?/g ) {
          my ($name, $prefix) = $col_def =~ m/`([^`]+)`(?:\((\d+)\))?/;
          push @cols, $name;
          push @col_prefixes, $prefix;
       }
       $name =~ s/`//g;
 
-      MKDEBUG && _d('Key', $name, 'cols:', join(', ', @cols));
+      MKDEBUG && _d( $name, 'key cols:', join(', ', map { "`$_`" } @cols));
 
       $keys->{$name} = {
          name         => $name,
@@ -377,6 +474,7 @@ sub get_keys {
          is_unique    => $unique,
          is_nullable  => scalar(grep { $is_nullable->{$_} } @cols),
          is_col       => { map { $_ => 1 } @cols },
+         ddl          => $key_ddl,
       };
 
       if ( $engine =~ m/InnoDB/i && !$clustered_key ) {
@@ -416,6 +514,7 @@ sub get_fks {
          parent_tbl     => $parent,
          parent_colnames=> $parent_cols,
          parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
+         ddl            => $fk,
       };
    }
 
@@ -426,6 +525,43 @@ sub remove_auto_increment {
    my ( $self, $ddl ) = @_;
    $ddl =~ s/(^\).*?) AUTO_INCREMENT=\d+\b/$1/m;
    return $ddl;
+}
+
+sub remove_secondary_indexes {
+   my ( $self, $ddl ) = @_;
+   my $sec_indexes_ddl;
+   my $tbl_struct = $self->parse($ddl);
+
+   if ( ($tbl_struct->{engine} || '') =~ m/InnoDB/i ) {
+      my $clustered_key = $tbl_struct->{clustered_key};
+      $clustered_key  ||= '';
+
+      my @sec_indexes   = map {
+         my $key_def = $_->{ddl};
+         $key_def =~ s/([\(\)])/\\$1/g;
+         $ddl =~ s/\s+$key_def//i;
+
+         my $key_ddl = "ADD $_->{ddl}";
+         $key_ddl   .= ',' unless $key_ddl =~ m/,$/;
+         $key_ddl;
+      }
+      grep { $_->{name} ne $clustered_key }
+      values %{$tbl_struct->{keys}};
+      MKDEBUG && _d('Secondary indexes:', Dumper(\@sec_indexes));
+
+      if ( @sec_indexes ) {
+         $sec_indexes_ddl = join(' ', @sec_indexes);
+         $sec_indexes_ddl =~ s/,$//;
+      }
+
+      $ddl =~ s/,(\n\) )/$1/s;
+   }
+   else {
+      MKDEBUG && _d('Not removing secondary indexes from',
+         $tbl_struct->{engine}, 'table');
+   }
+
+   return $ddl, $sec_indexes_ddl, $tbl_struct;
 }
 
 sub _d {
@@ -443,7 +579,12 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MySQLDump package 5998
+# MySQLDump package 6345
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/MySQLDump.pm
+#   trunk/common/t/MySQLDump.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 package MySQLDump;
 
@@ -549,17 +690,10 @@ sub _use_db {
       MKDEBUG && _d('No new DB to use');
       return;
    }
-   my $sql = 'SELECT DATABASE()';
-   MKDEBUG && _d($sql);
-   my $curr = $dbh->selectrow_array($sql);
-   if ( $curr && $new && $curr eq $new ) {
-      MKDEBUG && _d('Current and new DB are the same');
-      return $curr;
-   }
-   $sql = 'USE ' . $quoter->quote($new);
-   MKDEBUG && _d($sql);
+   my $sql = 'USE ' . $quoter->quote($new);
+   MKDEBUG && _d($dbh, $sql);
    $dbh->do($sql);
-   return $curr;
+   return;
 }
 
 sub get_create_table {
@@ -572,7 +706,7 @@ sub get_create_table {
       MKDEBUG && _d($sql);
       eval { $dbh->do($sql); };
       MKDEBUG && $EVAL_ERROR && _d($EVAL_ERROR);
-      my $curr_db = $self->_use_db($dbh, $quoter, $db);
+      $self->_use_db($dbh, $quoter, $db);
       $sql = "SHOW CREATE TABLE " . $quoter->quote($db, $tbl);
       MKDEBUG && _d($sql);
       my $href;
@@ -581,7 +715,7 @@ sub get_create_table {
          warn "Failed to $sql.  The table may be damaged.\nError: $EVAL_ERROR";
          return;
       }
-      $self->_use_db($dbh, $quoter, $curr_db);
+
       $sql = '/*!40101 SET @@SQL_MODE := @OLD_SQL_MODE, '
          . '@@SQL_QUOTE_SHOW_CREATE := @OLD_QUOTE */';
       MKDEBUG && _d($sql);
@@ -604,11 +738,11 @@ sub get_columns {
    my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
    MKDEBUG && _d('Get columns for', $db, $tbl);
    if ( !$self->{cache} || !$self->{columns}->{$db}->{$tbl} ) {
-      my $curr_db = $self->_use_db($dbh, $quoter, $db);
+      $self->_use_db($dbh, $quoter, $db);
       my $sql = "SHOW COLUMNS FROM " . $quoter->quote($db, $tbl);
       MKDEBUG && _d($sql);
       my $cols = $dbh->selectall_arrayref($sql, { Slice => {} });
-      $self->_use_db($dbh, $quoter, $curr_db);
+
       $self->{columns}->{$db}->{$tbl} = [
          map {
             my %row;
@@ -751,18 +885,21 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# DSNParser package 6366
+# DSNParser package 6785
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/DSNParser.pm
 #   trunk/common/t/DSNParser.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
+
 package DSNParser;
 
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 0;
 $Data::Dumper::Quotekeys = 0;
@@ -772,7 +909,6 @@ eval {
 };
 my $have_dbi = $EVAL_ERROR ? 0 : 1;
 
-use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 sub new {
    my ( $class, %args ) = @_;
@@ -1106,18 +1242,23 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# OptionParser package 5985
+# OptionParser package 6785
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/OptionParser.pm
+#   trunk/common/t/OptionParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
+
 package OptionParser;
 
 use strict;
 use warnings FATAL => 'all';
-
-use Getopt::Long;
 use List::Util qw(max);
 use English qw(-no_match_vars);
-
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Getopt::Long;
 
 my $POD_link_re = '[LC]<"?([^">]+)"?>';
 
@@ -1196,7 +1337,7 @@ sub get_specs {
 
    open my $fh, "<", $file or die "Cannot open $file: $OS_ERROR";
    my $contents = do { local $/ = undef; <$fh> };
-   close $file;
+   close $fh;
    if ( $contents =~ m/^=head1 DSN OPTIONS/m ) {
       MKDEBUG && _d('Parsing DSN OPTIONS');
       my $dsn_attribs = {
@@ -1723,7 +1864,7 @@ sub _validate_type {
       $self->_parse_size($opt, $val);
    }
    elsif ( $opt->{type} eq 'H' || (defined $val && $opt->{type} eq 'h') ) {
-      $opt->{value} = { map { $_ => 1 } split(',', ($val || '')) };
+      $opt->{value} = { map { $_ => 1 } split(/(?<!\\),\s*/, ($val || '')) };
    }
    elsif ( $opt->{type} eq 'A' || (defined $val && $opt->{type} eq 'a') ) {
       $opt->{value} = [ split(/(?<!\\),\s*/, ($val || '')) ];
@@ -2189,7 +2330,12 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# DuplicateKeyFinder package 4404
+# DuplicateKeyFinder package 5798
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/DuplicateKeyFinder.pm
+#   trunk/common/t/DuplicateKeyFinder.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 package DuplicateKeyFinder;
 
@@ -2219,7 +2365,7 @@ sub get_duplicate_keys {
 
    KEY:
    foreach my $key ( values %keys ) {
-      $key->{real_cols} = $key->{colnames}; 
+      $key->{real_cols} = [ @{$key->{cols}} ];
 
       $key->{len_cols}  = length $key->{colnames};
 
@@ -2272,7 +2418,8 @@ sub get_duplicate_keys {
 
    my $clustered_key = $args{clustered_key} ? $keys{$args{clustered_key}}
                      : undef;
-   MKDEBUG && _d('clustered key:', $clustered_key->{name});
+   MKDEBUG && _d('clustered key:', $clustered_key->{name},
+      $clustered_key->{colnames});
    if ( $clustered_key
         && $args{clustered}
         && $args{tbl_info}->{engine}
@@ -2311,9 +2458,11 @@ sub get_duplicate_fks {
               && $i_pcols eq $j_pcols ) {
             my $dupe = {
                key               => $fks[$j]->{name},
-               cols              => $fks[$j]->{colnames},
+               cols              => [ @{$fks[$j]->{cols}} ],
+               ddl               => $fks[$j]->{ddl},
                duplicate_of      => $fks[$i]->{name},
-               duplicate_of_cols => $fks[$i]->{colnames},
+               duplicate_of_cols => [ @{$fks[$i]->{cols}} ],
+               duplicate_of_ddl  => $fks[$i]->{ddl},
                reason            =>
                     "FOREIGN KEY $fks[$j]->{name} ($fks[$j]->{colnames}) "
                   . "REFERENCES $fks[$j]->{parent_tbl} "
@@ -2413,8 +2562,10 @@ sub remove_prefix_duplicates {
             my $dupe = {
                key               => $right_name,
                cols              => $right_keys->[$right_index]->{real_cols},
+               ddl               => $right_keys->[$right_index]->{ddl},
                duplicate_of      => $left_name,
                duplicate_of_cols => $left_keys->[$left_index]->{real_cols},
+               duplicate_of_ddl  => $left_keys->[$left_index]->{ddl},
                reason            => $reason,
                dupe_type         => $exact_dupe ? 'exact' : 'prefix',
             };
@@ -2442,33 +2593,33 @@ sub remove_clustered_duplicates {
    die "I need a ck argument"   unless $ck;
    die "I need a keys argument" unless $keys;
    my $ck_cols = $ck->{colnames};
-   my @dupes;
 
+   my @dupes;
    KEY:
    for my $i ( 0 .. @$keys - 1 ) {
-      my $suffix = $keys->[$i]->{colnames};
-      SUFFIX:
-      while ( $suffix =~ s/`[^`]+`,// ) {
-         my $len = min(length($ck_cols), length($suffix));
-         if ( substr($suffix, 0, $len) eq substr($ck_cols, 0, $len) ) {
-            my $dupe = {
-               key               => $keys->[$i]->{name},
-               cols              => $keys->[$i]->{real_cols},
-               duplicate_of      => $ck->{name},
-               duplicate_of_cols => $ck->{real_cols},
-               reason            => "Key $keys->[$i]->{name} ends with a "
-                                  . "prefix of the clustered index",
-               dupe_type         => 'clustered',
-               short_key         => $self->shorten_clustered_duplicate(
-                                       $ck_cols,
-                                       $keys->[$i]->{real_cols}
-                                    ),
-            };
-            push @dupes, $dupe;
-            delete $keys->[$i];
-            $args{callback}->($dupe, %args) if $args{callback};
-            last SUFFIX;
-         }
+      my $key = $keys->[$i]->{colnames};
+      if ( $key =~ m/$ck_cols$/ ) {
+         MKDEBUG && _d("clustered key dupe:", $keys->[$i]->{name},
+            $keys->[$i]->{colnames});
+         my $dupe = {
+            key               => $keys->[$i]->{name},
+            cols              => $keys->[$i]->{real_cols},
+            ddl               => $keys->[$i]->{ddl},
+            duplicate_of      => $ck->{name},
+            duplicate_of_cols => $ck->{real_cols},
+            duplicate_of_ddl  => $ck->{ddl},
+            reason            => "Key $keys->[$i]->{name} ends with a "
+                               . "prefix of the clustered index",
+            dupe_type         => 'clustered',
+            short_key         => $self->shorten_clustered_duplicate(
+                                    $ck_cols,
+                                    join(',', map { "`$_`" }
+                                       @{$keys->[$i]->{real_cols}})
+                                 ),
+         };
+         push @dupes, $dupe;
+         delete $keys->[$i];
+         $args{callback}->($dupe, %args) if $args{callback};
       }
    }
    MKDEBUG && _d('No more keys');
@@ -2566,7 +2717,12 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Transformers package 4299
+# Transformers package 6387
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Transformers.pm
+#   trunk/common/t/Transformers.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 
 package Transformers;
@@ -2574,7 +2730,7 @@ package Transformers;
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Time::Local qw(timelocal);
+use Time::Local qw(timegm timelocal);
 use Digest::MD5 qw(md5_hex);
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
@@ -2587,6 +2743,7 @@ our @EXPORT_OK   = qw(
    micro_t
    percentage_of
    secs_to_time
+   time_to_secs
    shorten
    ts
    parse_timestamp
@@ -2596,7 +2753,7 @@ our @EXPORT_OK   = qw(
 );
 
 our $mysql_ts  = qr/(\d\d)(\d\d)(\d\d) +(\d+):(\d+):(\d+)(\.\d+)?/;
-our $proper_ts = qr/(\d\d\d\d)-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.\d+)?/;
+our $proper_ts = qr/(\d\d\d\d)-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?/;
 our $n_ts      = qr/(\d{1,5})([shmd]?)/; # Limit \d{1,5} because \d{6} looks
 
 sub micro_t {
@@ -2663,6 +2820,26 @@ sub secs_to_time {
          $secs % 60);
 }
 
+sub time_to_secs {
+   my ( $val, $default_suffix ) = @_;
+   die "I need a val argument" unless defined $val;
+   my $t = 0;
+   my ( $prefix, $num, $suffix ) = $val =~ m/([+-]?)(\d+)([a-z])?$/;
+   $suffix = $suffix || $default_suffix || 's';
+   if ( $suffix =~ m/[smhd]/ ) {
+      $t = $suffix eq 's' ? $num * 1        # Seconds
+         : $suffix eq 'm' ? $num * 60       # Minutes
+         : $suffix eq 'h' ? $num * 3600     # Hours
+         :                  $num * 86400;   # Days
+
+      $t *= -1 if $prefix && $prefix eq '-';
+   }
+   else {
+      die "Invalid suffix for $val: $suffix";
+   }
+   return $t;
+}
+
 sub shorten {
    my ( $num, %args ) = @_;
    my $p = defined $args{p} ? $args{p} : 2;     # float precision
@@ -2681,13 +2858,19 @@ sub shorten {
 }
 
 sub ts {
-   my ( $time ) = @_;
+   my ( $time, $gmt ) = @_;
    my ( $sec, $min, $hour, $mday, $mon, $year )
-      = localtime($time);
+      = $gmt ? gmtime($time) : localtime($time);
    $mon  += 1;
    $year += 1900;
-   return sprintf("%d-%02d-%02dT%02d:%02d:%02d",
+   my $val = sprintf("%d-%02d-%02dT%02d:%02d:%02d",
       $year, $mon, $mday, $hour, $min, $sec);
+   if ( my ($us) = $time =~ m/(\.\d+)$/ ) {
+      $us = sprintf("%.6f", $us);
+      $us =~ s/^0\././;
+      $val .= $us;
+   }
+   return $val;
 }
 
 sub parse_timestamp {
@@ -2696,18 +2879,23 @@ sub parse_timestamp {
          = $val =~ m/^$mysql_ts$/ )
    {
       return sprintf "%d-%02d-%02d %02d:%02d:"
-                     . (defined $f ? '%02.6f' : '%02d'),
+                     . (defined $f ? '%09.6f' : '%02d'),
                      $y + 2000, $m, $d, $h, $i, (defined $f ? $s + $f : $s);
    }
    return $val;
 }
 
 sub unix_timestamp {
-   my ( $val ) = @_;
-   if ( my($y, $m, $d, $h, $i, $s)
-     = $val =~ m/^$proper_ts$/ )
-   {
-      return timelocal($s, $i, $h, $d, $m - 1, $y);
+   my ( $val, $gmt ) = @_;
+   if ( my($y, $m, $d, $h, $i, $s, $us) = $val =~ m/^$proper_ts$/ ) {
+      $val = $gmt
+         ? timegm($s, $i, $h, $d, $m - 1, $y)
+         : timelocal($s, $i, $h, $d, $m - 1, $y);
+      if ( defined $us ) {
+         $us = sprintf('%.6f', $us);
+         $us =~ s/^0\././;
+         $val .= $us;
+      }
    }
    return $val;
 }
@@ -2723,6 +2911,10 @@ sub any_unix_timestamp {
          :                  $n;           # default: Seconds
       MKDEBUG && _d('ts is now - N[shmd]:', $n);
       return time - $n;
+   }
+   elsif ( $val =~ m/^\d{9,}/ ) {
+      MKDEBUG && _d('ts is already a unix timestamp');
+      return $val;
    }
    elsif ( my ($ymd, $hms) = $val =~ m/^(\d{6})(?:\s+(\d+:\d+:\d+))?/ ) {
       MKDEBUG && _d('ts is MySQL slow log timestamp');
@@ -2765,7 +2957,12 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 6042
+# QueryRewriter package 6767
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/QueryRewriter.pm
+#   trunk/common/t/QueryRewriter.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 use strict;
 use warnings FATAL => 'all';
@@ -2898,6 +3095,11 @@ sub fingerprint {
               }
               {$1 /*repeat$2*/}xg;
    $query =~ s/\blimit \?(?:, ?\?| offset \?)?/limit ?/; # LIMIT
+
+   if ( $query =~ m/\bORDER BY /gi ) {  # Find, anchor on ORDER BY clause
+      1 while $query =~ s/\G(.+?)\s+ASC/$1/gi && pos $query;
+   }
+
    return $query;
 }
 
@@ -2950,10 +3152,10 @@ sub distill_verbs {
       my $last = '';
       grep { my $pass = $_ ne $last; $last = $_; $pass } map { uc } @verbs;
    };
-   my $verbs = join(q{ }, @verbs);
-   $verbs =~ s/( UNION SELECT)+/ UNION/g;
+   my $verb_str = join(q{ }, @verbs);
+   $verb_str =~ s/( UNION SELECT)+/ UNION/g;
 
-   return $verbs;
+   return $verb_str;
 }
 
 sub __distill_tables {
@@ -3013,6 +3215,9 @@ sub distill {
 sub convert_to_select {
    my ( $self, $query ) = @_;
    return unless $query;
+
+   return if $query =~ m/=\s*\(\s*SELECT /i;
+
    $query =~ s{
                  \A.*?
                  update\s+(.*?)
@@ -3027,7 +3232,7 @@ sub convert_to_select {
                     (?:insert(?:\s+ignore)?|replace)\s+
                     .*?\binto\b(.*?)\(([^\)]+)\)\s*
                     values?\s*(\(.*?\))\s*
-                    (?:\blimit\b|on\s*duplicate\s*key.*)?\s*
+                    (?:\blimit\b|on\s+duplicate\s+key.*)?\s*
                     \Z
                  }
                  {__insert_to_select($1, $2, $3)}exsi
@@ -3035,8 +3240,8 @@ sub convert_to_select {
                     \A.*?
                     (?:insert(?:\s+ignore)?|replace)\s+
                     (?:.*?\binto)\b(.*?)\s*
-                    set?\s*\b(.*?)\s*
-                    (?:\blimit\b|on\s*duplicate\s*key.*)?\s*
+                    set\s+(.*?)\s*
+                    (?:\blimit\b|on\s+duplicate\s+key.*)?\s*
                     \Z
                  }
                  {__insert_to_select_with_set($1, $2)}exsi
@@ -3495,14 +3700,14 @@ package mk_schema_advisor;
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
 $Data::Dumper::Quotekeys = 0;
 
 Transformers->import(qw(shorten));
-
-use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 use sigtrap 'handler', \&sig_int, 'normal-signals';
 
@@ -3514,11 +3719,9 @@ sub main {
    # ########################################################################
    # Get configuration information.
    # ########################################################################
-   my $dp = new DSNParser;
    my $o  = new OptionParser(
       strict      => 0,
       prompt      => '[OPTION...] FILE|DSN [FILE|DSN...]',
-      dp          => $dp,
       description => q{examines MySQL schema for inefficiencies.  Specify }
                    . q{either files or DSNs.  Files can contain multiple }
                    . q{SHOW CREATE TABLE separated by blank lines. }
@@ -3527,6 +3730,7 @@ sub main {
    $o->get_specs();
    $o->get_opts();
 
+   my $dp = $o->DSNParser();
    $dp->prop('set-vars', $o->get('set-vars'));
 
    $o->usage_or_errors();
@@ -3537,7 +3741,7 @@ sub main {
    my $vp = new VersionParser();
    my $q  = new Quoter();
    my $tp = new TableParser(Quoter => $q);
-   my $du = new MySQLDump(cache => 0);
+   my $du = new MySQLDump();
    my $qr = new QueryRewriter();
    my %common_modules = (
       DSNParser     => $dp,
@@ -4103,6 +4307,66 @@ User for login if not current user.
 =item --version
 
 Show version and exit.
+
+=back
+
+=head1 DSN OPTIONS
+
+These DSN options are used to create a DSN.  Each option is given like
+C<option=value>.  The options are case-sensitive, so P and p are not the
+same option.  There cannot be whitespace before or after the C<=> and
+if the value contains whitespace it must be quoted.  DSN options are
+comma-separated.  See the L<maatkit> manpage for full details.
+
+=over
+
+=item * A
+
+dsn: charset; copy: yes
+
+Default character set.
+
+=item * D
+
+dsn: database; copy: yes
+
+Default database.
+
+=item * F
+
+dsn: mysql_read_default_file; copy: yes
+
+Only read default options from the given file
+
+=item * h
+
+dsn: host; copy: yes
+
+Connect to host.
+
+=item * p
+
+dsn: password; copy: yes
+
+Password to use when connecting.
+
+=item * P
+
+dsn: port; copy: yes
+
+Port number to use for connection.
+
+=item * S
+
+dsn: mysql_socket; copy: yes
+
+Socket file to use for connection.
+
+=item * u
+
+dsn: user; copy: yes
+
+User for login if not current user.
 
 =back
 
