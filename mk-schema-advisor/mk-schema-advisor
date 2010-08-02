@@ -696,6 +696,163 @@ sub _use_db {
    return;
 }
 
+sub give_advice {
+  my ($msg) = @_;
+  print "Advice: $msg\n";
+}
+
+
+sub proc_analyse_table {
+   my ( $self, $dbh, $quoter, $db, $tbl, $o ) = @_;
+   my $sql;
+   my $need_status = 0;
+   my $min_rows = 0;
+   my %type_hash = ();
+   
+   
+   if (defined($o->get("min-rows")))
+   {
+     $need_status = 1;
+     $min_rows = $o->get("min-rows");
+   }
+   
+   if ($need_status)
+   {
+     my @tbl_status = $self->get_table_status($dbh,$quoter,$db,$tbl);
+     return if (defined($tbl_status[0]->{rows}) && 
+       $tbl_status[0]->{rows} < $min_rows);      
+   }  
+   
+   my @cols = $self->get_columns($dbh,$quoter,$db,$tbl);
+   my ($field_name,$field);
+   my @cols_to_check = ();
+   my $sth;
+   my $plain_field_name;
+   
+   foreach $field (@{$cols[0]})
+   {
+     if ($field->{type} =~ m/char|text|blob/i)
+     {
+       push(@cols_to_check,$field->{field});
+       $type_hash{$db.".".$tbl.".".$field->{field}} = $field->{type};
+     }  
+   }
+   
+   return if ($#cols_to_check == -1);
+   
+   print "Analyzing $db.$tbl:\n";
+   
+   $sql = "SELECT ".join(',',@cols_to_check)." FROM " . $quoter->quote($db, $tbl). 
+        " PROCEDURE ANALYSE()";
+   MKDEBUG && _d("analyse: ". $sql);     
+   my $href = undef;     
+   my @fields = ("Field_name","Optimal_fieldtype");
+   eval { $href = $dbh->selectall_hashref($sql,
+     \@fields); };
+   if ( $EVAL_ERROR ) {
+         warn "Failed to $sql.  The table may be damaged.\nError: $EVAL_ERROR";
+         return;
+   }
+   
+   my @hints = ();   
+   my @alter = ();
+   my %still_string = ();
+   
+   foreach $field_name (keys %$href)
+   {
+     my $nested_h = $href->{$field_name};
+     my (@tmp_keys) = keys %$nested_h;
+     my $best_storage_type = $tmp_keys[0];
+     my $orig_type = $type_hash{$field_name};
+     if ($best_storage_type ne $orig_type)
+     {
+       $plain_field_name = (split(/\./,$field_name,3))[2];
+       push(@hints, 
+         "Change $plain_field_name from $orig_type to $best_storage_type");
+       push(@alter,"modify $plain_field_name $best_storage_type");  
+     }
+     
+     if ($best_storage_type =~ m/char|text|blob/i)
+     {
+       $still_string{$plain_field_name} = 1;
+     }
+   }
+   
+   if ($#hints != -1)
+   {
+     give_advice("In table $db.$tbl:". join("\n", @hints).
+       "\nSuggested ALTER: ALTER TABLE $db.$tbl ".join(',',@alter));
+   }
+   
+   my $first = 1;
+   my @compress_cols = ();
+   
+   foreach $field_name (@cols_to_check)
+   {
+     if ($still_string{$field_name})
+     {
+       push(@compress_cols,
+         "sum(length($field_name))-sum(length(compress($field_name))) 
+         as save_compress_$field_name,
+         (sum(inet_ntoa(inet_aton($field_name)) = $field_name) =
+          count($field_name)) as
+          is_ip_$field_name ");
+         
+     }
+   }
+   
+   if ($#compress_cols > -1)
+   {
+     $sql = "select ".join(',', @compress_cols)." from $db.$tbl";
+     #print $sql."\n";
+     $sth = $dbh->prepare($sql);
+     $sth->execute();
+     my @ips = ();
+     my @cols_to_compress = ();
+     
+     while (my $row = $sth->fetchrow_hashref)
+     {
+       foreach $field_name (keys %$row)
+       {
+         if (substr($field_name,0,5) eq "is_ip" && 
+          defined($row->{$field_name}) && $row->{$field_name} == 1)
+         {
+           push(@ips,substr($field_name,6));
+         } 
+         elsif ((substr($field_name,0,13) eq "save_compress")
+           && defined($row->{$field_name}) && 
+              $row->{$field_name} > 0)
+         {
+           my $save_in_mb = sprintf("%.4f",$row->{$field_name}/(1024*1024));
+           push(@cols_to_compress,substr($field_name,14).
+            " compression saves $save_in_mb MB");
+         }
+         #print "$field_name: ".$row->{$field_name}."\n" 
+         #  if defined($row->{$field_name}) ;
+       }
+     }
+     
+     $sth->finish;
+     
+     if ($#ips > -1)
+     {
+       give_advice("Table $db.$tbl:".
+         " The following columns appear to store IP addresses:".
+         join(',',@ips).". You can convert them to INT UNSIGNED and use".
+         " MySQL functions INET_NTOA() and INET_ATON() for storage and ".
+         " retrieval.");
+     }
+     
+     if ($#cols_to_compress > -1)
+     {
+        give_advice("Table $db.$tbl: " .
+        "The following columns can give you space savings ".
+        " if you stored them via MySQL function COMPRESS() and retrieved ".
+        " via MySQL function UNCOMPRESS(): ".join(',',@cols_to_compress));
+     }
+   }
+}
+
 sub get_create_table {
    my ( $self, $dbh, $quoter, $db, $tbl ) = @_;
    if ( !$self->{cache} || !$self->{tables}->{$db}->{$tbl} ) {
@@ -3852,9 +4009,10 @@ sub main {
             while ( my $tbl = $next_tbl->() ) {
                MKDEBUG && _d('Getting table', $tbl);
                my $obj;
-               eval {
+               #eval {
+                  $du->proc_analyse_table($dbh, $q, $db, $tbl, $o);
                   $obj = $du->get_create_table($dbh, $q, $db, $tbl)->[1];
-               };
+               #};
                if ( !$obj ) {
                   # If this happens errors will be printed to STDERR so the
                   # user knows what table is broken.
@@ -4016,6 +4174,8 @@ sub _d {
         @_;
    print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
 }
+
+
 
 # ############################################################################
 # Run the program.
@@ -4238,6 +4398,13 @@ type: Hash
 Ignore this comma-separated list of table names.
 
 Table names may be qualified with the database name.
+
+
+=item --min-rows
+
+type: int
+
+Only examine tables that have at least that many rows
 
 =item --ignore-tables-regex
 
