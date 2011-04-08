@@ -4142,19 +4142,18 @@ sub main {
 
    # Figure out which cmd line args are files (if any) and which is
    # the DSN (if any).
-   my $dsn;
-   my @files;
-   foreach my $arg ( @ARGV ) {
-      if ( -f $arg ) {
-         push @files, $arg;
-      }
-      else {
-         $o->save_error('Specify only 1 DSN on the command line') if $dsn;
-         $dsn = $arg;
-      }
+   my $dsn = shift @ARGV;
+   if ( !$dsn ) {
+      $o->save_error('A DSN with a t part must be specified') if $dsn;
    }
    $dsn = $dp->parse($dsn, $dp->parse_options($o));
    my ($db, $old_tbl) = $q->split_unquote($dsn->{t} || "", $dsn->{D} || "");
+
+   my $rename_fk_method = lc $o->get('update-foreign-keys-method');
+   if ( ($rename_fk_method || '') eq 'drop_old_table' ) {
+      $o->set('rename-tables',  0);
+      $o->set('drop-old-table', 0),
+   }
 
    if ( !$o->get('help') ) {
       if ( !$db ) {
@@ -4176,6 +4175,16 @@ sub main {
             chomp $EVAL_ERROR;
             $o->save_error("--progress $EVAL_ERROR");
          }
+      }
+
+      if ( $o->get('child-tables') && !$o->get('update-foreign-keys-method') ) {
+         $o->save_error("--child-tables requires --update-foreign-keys-method");
+      }
+
+      if ( $rename_fk_method
+           && $rename_fk_method ne 'rebuild_constraints'
+           && $rename_fk_method ne 'drop_old_table' ) {
+         $o->save_error("Invalid --update-foreign-keys-method value");
       }
    }
 
@@ -4288,7 +4297,7 @@ sub main {
 
    my @child_tables;
    if ( my $child_tables = $o->get('child-tables') ) {
-      if ( lc $child_tables eq 'auto-detect' ) {
+      if ( lc $child_tables eq 'auto_detect' ) {
          msg("Auto-detecting child tables of $tables{old_table}");
          @child_tables = get_child_tables(%plugin_args);
          msg("Child tables of $tables{old_table}: "
@@ -4425,11 +4434,29 @@ sub main {
       # Update foreign key constraints if there are child tables.
       # #####################################################################
       if ( @child_tables ) {
-         msg("Updating foreign key constraints in child tables");
-         update_foreign_key_constraints(
-            child_tables => \@child_tables,
-            %plugin_args,
-         );
+         msg("Renaming foreign key constraints in child table");
+         if ( $rename_fk_method eq 'rebuild_constraints' ) { 
+            update_foreign_key_constraints(
+               child_tables => \@child_tables,
+               %plugin_args,
+            );
+         }
+         elsif ( $rename_fk_method eq 'drop_old_table' ) {
+            $sql = "SET foreign_key_checks=0";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+            
+            $sql = "DROP TABLE $tables{old_table}";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+
+            $sql = "RENAME TABLE $tables{new_table} TO $tables{old_table}";
+            msg($sql);
+            $dbh->do($sql) unless $o->get('print');
+         }
+         else {
+            die "Invalid --update-foreign-keys-method value: $rename_fk_method";
+         }
       }
 
       # #####################################################################
@@ -4591,7 +4618,7 @@ sub update_foreign_key_constraints {
 
       my @constraints = $table_def =~ m/$constraint/g;
       if ( !@constraints ) {
-         warn "Child table $child_table does not have any foreign key "
+         warn "Child table `$child_table` does not have any foreign key "
             . "constraints referencing $old_table_renamed";
          next CHILD_TABLE;
       }
@@ -4674,7 +4701,7 @@ mk-online-schema-change - Perform online, non-blocking schema changes to tables.
 
 =head1 SYNOPSIS
 
-Usage: mk-online-schema-change [OPTION...] DSN [FILE...]
+Usage: mk-online-schema-change [OPTION...] DSN
 
 mk-online-schema-change performs online, non-blocking schema changes to tables.
 The table to change must be specified in the DSN C<t> part, like C<t=my_table>.
@@ -4691,6 +4718,14 @@ Change the table's engine to InnoDB:
 Rebuild but do not alter the table, and keep the old (original) table:
 
   mk-online-schema-change h=127.1,t=db.tbl
+
+Add column to parent table, update child table foreign key contraints:
+
+  mk-online-schema-change                       \
+    h=127.1,D=db,t=parent                       \
+    --alter-new-table 'ADD COLUMN (foo INT)'    \
+    --child-tables child1,child2                \
+    --update-foreign-keys-method drop_old_table
 
 =head1 RISKS
 
@@ -4824,9 +4859,12 @@ tables.  The list of child tables is comma-separted, not quoted, and not
 database-qualified (the database is assumed to be the same as the old table)
 If you specify a table that doesn't exist, it is ignored.
 
-Or you can specify just C<auto-detect> and the tool will query the
+Or you can specify just C<auto_detect> and the tool will query the
 C<INFORMATION_SCHEMA> to auto-detect any foreign key contraints on the
-old table.  
+old table.
+
+When specifying this option, you must also specify
+L<"--update-foreign-keys-method">.
 
 =item --chunk-size
 
@@ -4869,7 +4907,8 @@ only.
 short form: -D; type: string
 
 Database for the old and new table.  The new table can only be created
-inside the same database as the old (original) table.
+inside the same database as the old (original) table.  You can also specify
+the database with the C<D> part of the DSN given on the command line.
 
 =item --defaults-file
 
@@ -4885,6 +4924,9 @@ after the new table has taken its place.  In case of problems, the old
 table may be needed.  When this option is specified, the old table is dropped
 after (if) everything finishes successfully.  If there is a problem,
 both table (old/original and new/altered) will probably be left.
+
+If altering a table with foreign key constraints, you may need to specify
+this option depending on which L<"--update-foreign-keys-method"> you choose.
 
 =item --exit-after-checks
 
@@ -4969,6 +5011,60 @@ short form: -q
 
 Do not print messages to STDOUT.  Errors and warnings are still printed to
 STDERR.
+
+=item --update-foreign-keys-method
+
+type: string
+
+Method for updating foreign key constraints in L<"--child-tables">.  If
+L<"--child-tables"> is specified, the tool will need to ensure that foreign
+key constraints in those tables that reference the old (parent) table still
+reference the table table after the old table is dropped and the new table
+takes its place (if L<"--[no]rename-tables"> is enabled).
+
+When a parent table is renamed, MySQL automatically updates all child table
+foreign key constraints that reference the renamed table so that the rename
+does not break foreign key constraints.  This poses a problem for this tool.
+For example: if the old table being altered is called C<foo>, then
+L<"--[no]rename-tables"> renames C<foo> to C<__old_foo> so that the altered
+copy, C<__new_foo>, can be renamed to C<foo>.  Any foreign key referenes to
+the old C<foo> are renamed by MySQL to C<__old_foo> which is not what
+we want; we want those reference to remain C<foo>.
+
+There are currently two methods to solve this problem:
+
+=over
+
+=item rebuild_constraints
+
+Drop and re-add child table foreign key constraints to reference the new table.
+This method parses foreign key constraints referencing the old table from
+all child tables, drops them, then re-adds them referencing the new table.
+
+This method uses C<ALTER TABLE> which can by slow and blocking, but it is
+safer because the old table does not need to be dropped.  So if there's a
+problem with the new table and L<"--drop-old-table"> was not specified,
+then the old table can be restored.
+
+=item drop_old_table
+
+Disable foreign key checks (FOREIGN_KEY_CHECKS=0) then drop the old table.
+This method bypasses MySQL's auto-renaming feature by disabling foreign key
+checks, dropping the old table, then renaming the new table with the same
+name.  Foreign key checks must be disabled to drop table because it is
+referenced by foreign key constraints.  Since the old table is not renamed,
+MySQL does not auto-rename references to it.  Then the new table is renamed
+to the same name, so child table references are maintained.  So this method
+requires L<"--drop-old-table">.
+
+This method is faster and does not block, but it is less safe for two reaons.
+One, for a very short time (between dropping the old table and renaming the
+new table) the child tables reference a non-existent table.  Two, more
+importantly, if for some reason the new table was not copied correctly, didn't
+capture all changes, etc., the old table cannot be recovered because it
+was dropped. 
+
+=back
 
 =item --[no]rename-tables
 

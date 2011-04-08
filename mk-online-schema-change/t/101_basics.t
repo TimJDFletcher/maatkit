@@ -25,7 +25,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 14;
+   plan tests => 18;
 }
 
 my $output  = "";
@@ -157,14 +157,14 @@ is(
 # country
 #   ^- city (on update cascade)
 #        ^- address (on update cascade)
-# So for good measure we'll do three runs: alter the parent table (country),
-# its child (city), and then its child (address).  No fk constraints should
-# break or be different after the alters.
+
+############################
+# rebuild_constraints method
+############################
 $sb->load_file('master', "mk-online-schema-change/t/samples/fk_tables_schema.sql");
 
 # city has a fk constraint on country, so get its original table def.
 my $orig_table_def = $dbh->selectrow_hashref('show create table mkosc.city')->{'create table'};
-my ($orig_fk_constraint) = $orig_table_def =~ m/(CONSTRAINT .+)/m;
 
 # Alter the parent table.  The error we need to avoid is:
 # DBD::mysql::db do failed: Cannot delete or update a parent row:
@@ -172,12 +172,20 @@ my ($orig_fk_constraint) = $orig_table_def =~ m/(CONSTRAINT .+)/m;
 # `mkosc`.`__old_country`"]
 output(
    sub { $exit = mk_online_schema_change::main(@args,
-      'D=mkosc,t=country', qw(--child-tables auto-detect --drop-old-table)) },
+      'D=mkosc,t=country', qw(--child-tables auto_detect --drop-old-table),
+      qw(--update-foreign-keys-method rebuild_constraints)) },
 );
 is(
    $exit,
    0,
-   "Dropped parent table"
+   "Exit status 0 (rebuild_constraints method)"
+);
+
+$rows = $dbh->selectall_arrayref('show tables from mkosc like "\_\_%"');
+is_deeply(
+   $rows,
+   [],
+   "Old table dropped (rebuild_constraints method)"
 );
 
 # Get city's table def again and verify that its fk constraint still
@@ -189,7 +197,39 @@ my $new_table_def = $dbh->selectrow_hashref('show create table mkosc.city')->{'c
 is(
    $new_table_def,
    $orig_table_def,
-   "Updated child table foreign key constraint"
+   "Updated child table foreign key constraint (rebuild_constraints method)"
+);
+
+#######################
+# drop_old_table method 
+#######################
+$sb->load_file('master', "mk-online-schema-change/t/samples/fk_tables_schema.sql");
+
+$orig_table_def = $dbh->selectrow_hashref('show create table mkosc.city')->{'create table'};
+
+output(
+   sub { $exit = mk_online_schema_change::main(@args,
+      'D=mkosc,t=country', qw(--child-tables auto_detect),
+      qw(--update-foreign-keys-method drop_old_table)) },
+);
+is(
+   $exit,
+   0,
+   "Exit status 0 (drop_old_table method)"
+);
+
+$rows = $dbh->selectall_arrayref('show tables from mkosc like "\_\_%"');
+is_deeply(
+   $rows,
+   [],
+   "Old table dropped (drop_old_table method)"
+) or print Dumper($rows);
+
+$new_table_def = $dbh->selectrow_hashref('show create table mkosc.city')->{'create table'};
+is(
+   $new_table_def,
+   $orig_table_def,
+   "Updated child table foreign key constraint (drop_old_table method)"
 );
 
 # #############################################################################
