@@ -15,15 +15,15 @@ use MaatkitTest;
 shift @INC;  # our unshift (above)
 shift @INC;  # MaatkitTest's unshift
 
-require "$trunk/mk-table-access/mk-table-access";
+require "$trunk/mk-table-usage/mk-table-usage";
 
 my @args = qw();
-my $in   = "$trunk/mk-table-access/t/samples/in/";
-my $out  = "mk-table-access/t/samples/out/";
+my $in   = "$trunk/mk-table-usage/t/samples/in/";
+my $out  = "mk-table-usage/t/samples/out/";
 
 ok(
    no_diff(
-      sub { mk_table_access::main(@args, "$in/slow001.txt") },
+      sub { mk_table_usage::main(@args, "$in/slow001.txt") },
       "$out/slow001.txt",
    ),
    'Analysis for slow001.txt'
@@ -31,7 +31,7 @@ ok(
 
 ok(
    no_diff(
-      sub { mk_table_access::main(@args, "$in/slow002.txt") },
+      sub { mk_table_usage::main(@args, "$in/slow002.txt") },
       "$out/slow002.txt",
    ),
    'Analysis for slow002.txt (issue 1237)'
