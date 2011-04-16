@@ -15,44 +15,20 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# TableAccess package $Revision$
+# TableUsage package $Revision$
 # ###########################################################################
 
-# Package: TableAccess
-# TableAccess determines how tables in a query are accessed: read or written
-# and in what context.  Each table access is a "CAT": Context, Access and
-# Table.  The context of a table access is usually the query: SELECT, INSERT,
-# etc.  JOIN is also a context for joined tables in a SELECT.  Certain queries
-# like INSERT-SELECT have more complex contexts.  Access is always "read" or
-# "write".  Table is the table name accessed, database-qualified if possible.
-#
-# Table cats also show how data flows between tables in complex queries.  For
-# example, in "INSERT INTO t1 (c) SELECT c FROM t2 LEFT JOIN t3 USING (id)",
-# the table cats are,
-# (code start)
-#   { context => 'INSERT',
-#     access  => 'write',
-#     table   => 't1',
-#   },
-#   { context => 'INSERT',
-#     access  => 'read',
-#     table   => 't2',
-#   },
-#   { context => 'INSERT',
-#     access  => 'read',
-#     table   => 't3',
-#   },
-# That reads like: the INSERT writes to table t1 and reads from tables t2
-# and t3.
+# Package: TableUsage
+# TableUsage determines how tables in a query are used.
 #
 # For best results, queries should be from EXPLAIN EXTENDED so all identifiers
-# are fully qualified.  Else, some table accesses may be missed because
+# are fully qualified.  Else, some table references may be missed because
 # no effort is made to table-qualify unqualified columns.
 #
 # This package uses both QueryParser and SQLParser.  The former is used for
 # simple queries, and the latter is used for more complex queries where table
-# access may be hidden in who-knows-which clause of the SQL statement.
-package TableAccess;
+# usage may be hidden in who-knows-which clause of the SQL statement.
+package TableUsage;
 
 { # package scope
 use strict;
@@ -76,7 +52,7 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   SQLParser   - <SQLParser> object
 #
 # Returns:
-#   TableAccess object
+#   TableUsage object
 sub new {
    my ( $class, %args ) = @_;
    my @required_args = qw(QueryParser SQLParser);
@@ -115,7 +91,7 @@ sub new {
 #     },
 #   ],
 #   (code stop)
-sub get_table_access {
+sub get_table_usage {
    my ( $self, %args ) = @_;
    my @required_args = qw(query);
    foreach my $arg ( @required_args ) {
@@ -150,7 +126,7 @@ sub get_table_access {
    else {
       # SQLParser parsed the query, so now we need to examine its structure
       # to determine the CATs for each table.
-      $cats = $self->_get_cats_from_query_struct(
+      $cats = $self->_get_tables_used_from_query_struct(
          query_struct => $query_struct,
          %args,
       );
@@ -196,7 +172,7 @@ sub _get_cats_from_query_parser {
    return \@cats;
 }
 
-sub _get_cats_from_query_struct {
+sub _get_tables_used_from_query_struct {
    my ( $self, %args ) = @_;
    my @required_args = qw(query_struct);
    foreach my $arg ( @required_args ) {
@@ -205,8 +181,7 @@ sub _get_cats_from_query_struct {
    my ($query_struct) = @args{@required_args};
    my $sp             = $self->{SQLParser};
 
-   MKDEBUG && _d('Getting cats from query struct');
-   my @cats;
+   MKDEBUG && _d('Getting table used from query struct');
 
    # The table references clause is different depending on the query type.
    my $query_type = uc $query_struct->{type};
@@ -215,132 +190,190 @@ sub _get_cats_from_query_struct {
                   : $query_type =~ m/UPDATE/             ? 'tables'
                   : die "Cannot find table references for $query_type queries";
    my $tables     = $query_struct->{$tbl_refs};
-   my $access     = $args{access}           ? lc $args{access}
-                  : $query_type eq 'SELECT' ? 'read'
-                  :                           'write';
 
-   # UPDATE queries with multiple tables are a special case.  The query
-   # is really just reading each referenced table, and it only writes to
-   # tables referenced in the SET clause.
-   my $multi_table_update = 0;
+   # Get tables used in the query's WHERE clause, if it has one.
+   my $where;
+   if ( $query_struct->{where} ) {
+      $where = $self->_get_tables_used_in_where(
+         %args,
+         tables  => $tables,
+         where   => $query_struct->{where},
+      );
+   }
+
+   my @tables_used;
    if ( $query_type eq 'UPDATE' && @{$query_struct->{tables}} > 1 ) {
       MKDEBUG && _d("Multi-table UPDATE");
-      $multi_table_update = 1;
+      # UPDATE queries with multiple tables are a special case.  The query
+      # reads from each referenced table and writes only to tables referenced
+      # in the SET clause.  Each written table is like its own query, so
+      # we create a table usage hashref for each one.
 
-      my $set_cats = $self->_get_cats_from_set(
+      my $set_cats = $self->_get_tables_used_in_set(
          %args,
          context => $query_type,
          set     => $query_struct->{set},
          tables  => $tables,
       );
-      push @cats, @$set_cats;
+      push @tables_used, @$set_cats;
+   }
+   else {
+      if ( $query_type eq 'SELECT' ) {
+         my $clist_tables = $self->_get_tables_used_in_columns(
+            %args,
+            tables  => $tables,
+            columns => $query_struct->{columns},
+         );
+         foreach my $table ( @$clist_tables ) {
+            my $table_usage = {
+               context => 'SELECT',
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from CLIST:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( @$tables > 1 || $query_type ne 'SELECT' ) {
+         my $context = @$tables > 1 ? 'JOIN' : $query_type;
+         foreach my $table ( @$tables ) {
+            my $table = $self->_qualify_table_name(
+               %args,
+               tables => $tables,
+               db     => $table->{db},
+               tbl    => $table->{name},
+            );
+            my $table_usage = {
+               context => $context,
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from TLIST:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( $where && $where->{joined_tables} ) {
+         foreach my $table ( @{$where->{joined_tables}} ) {
+            my $table_usage = {
+               context => $query_type,
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from WHERE (implicit join):",
+               Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( $query_type =~ m/(?:INSERT|REPLACE)/ && $query_struct->{select} ) {
+         MKDEBUG && _d("Getting tables used in INSERT-SELECT");
+         my $insert_select_tables = $self->_get_tables_used_from_query_struct(
+            %args,
+            query_struct => $query_struct->{select},
+         );
+         push @{$tables_used[0]}, @$insert_select_tables;
+      }
+
+      if ( $where && $where->{filter_tables} ) {
+         foreach my $table ( @{$where->{filter_tables}} ) {
+            my $table_usage = {
+               context => 'WHERE',
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from WHERE:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
    }
 
-   # Get cats for each table referenced by the query.  The query should
-   # reference tables, i.e. we assume that we're not given queries like
-   # SELECT NOW() or SET @a=1.
-   my $tbl_refs_cats = $self->_get_cats_from_tables(
-      %args,
-      query_type => $query_type,
-      tables     => $tables,
-      access     => $multi_table_update ? 'read' : $access,
-   );
-   push @cats, @$tbl_refs_cats;
-
-   # If the query is an INSERT/REPLACE and has an optional SELECT query,
-   # get the SELECT query's cats by recursing.  The SELECT is its own,
-   # complete query with a query struct like the parent INSERT/REPLACE;
-   # that's why recursing works.
-   if ( $query_type =~ m/(?:INSERT|REPLACE)/ && $query_struct->{select} ) {
-      MKDEBUG && _d("Getting cats from INSERT-SELECT");
-      my $insert_select_cats = $self->_get_cats_from_query_struct(
-         %args,
-         query_struct => $query_struct->{select},
-         context      => $query_type,  # SELECT's context is parent INSERT
-         access       => 'read',
-      );
-      push @cats, @$insert_select_cats;
-   }
-
-   # Get cats for each unique table referenced in the query's WHERE
-   # clause, if it has one.
-   if ( $query_struct->{where} ) {
-      my $where_cats = $self->_get_cats_from_where(
-         %args,
-         tables  => $tables,
-         where   => $query_struct->{where},
-         context => 'WHERE',
-      );
-      push @cats, @$where_cats;
-   }
-
-   return \@cats;
+   return \@tables_used;
 }
 
-sub _get_cats_from_tables {
+sub _get_tables_used_in_columns {
    my ( $self, %args ) = @_;
-   my @required_args = qw(query_type tables access);
+   my @required_args = qw(tables columns);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($query_type, $tables, $access) = @args{@required_args};
-   MKDEBUG && _d("Getting cats from table references");
+   my ($tables, $columns) = @args{@required_args};
 
-   my @cats;
-   foreach my $table ( @$tables ) {
-      my $context = $args{context} ? $args{context}
-                  : $table->{join} ? 'JOIN'
-                  :                  $query_type;
-      my $cat = {
-         context => $context,
-         access  => $access,
-         table   => ($table->{db} ? "$table->{db}." : '') . $table->{name},
-      };
-      MKDEBUG && _d("Table access:", Dumper($cat));
-      push @cats, $cat;
+   MKDEBUG && _d("Getting tables used in CLIST");
+
+   # The easy case: only 1 table is used so all columns must access that table.
+   if ( @$tables == 1 ) {
+      my $table = $self->_qualify_table_name(
+         %args,
+         db  => $tables->[0]->{db},
+         tbl => $tables->[0]->{name},
+      );
+      return [ $table ];
    }
 
-   return \@cats;
+   my @tables;
+   foreach my $column ( @$columns ) {
+      my $table = $self->_qualify_table_name(
+         %args,
+         db  => $column->{db},
+         tbl => $column->{tbl},
+      );
+      push @tables, $table if $table;
+   }
+
+   return \@tables;
 }
 
-sub _get_cats_from_where {
+sub _get_tables_used_in_where {
    my ( $self, %args ) = @_;
-   my @required_args = qw(context tables where);
+   my @required_args = qw(tables where);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   MKDEBUG && _d("Getting cats from WHERE condition");
-   return $self->_get_cats_from_conditions(
+   MKDEBUG && _d("Getting tables used in WHERE");
+   my $conditions = $self->_parse_conditions(
       %args,
       conditions => $args{where},
-      access     => 'read',  # WHERE can only read
    );
+
+   my @filter_tables;
+   my @joined_tables;
+   CONDITION:
+   foreach my $cond ( @$conditions ) {
+      if ( $cond->{join} ) {
+         push @joined_tables, $cond->{table};
+      }
+      else {
+         push @filter_tables, $cond->{table};
+      }
+   }
+
+   return {
+      filter_tables => \@filter_tables,
+      joined_tables => \@joined_tables,
+   };
 }
 
-sub _get_cats_from_set {
+sub _get_tables_used_in_set {
    my ( $self, %args ) = @_;
    my @required_args = qw(context tables set);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   MKDEBUG && _d("Getting cats from SET conditions");
-   return $self->_get_cats_from_conditions(
+   MKDEBUG && _d("Getting tables used in SET");
+   return $self->_get_tables_used_in_conditions(
       %args,
       conditions => $args{set},
-      access     => 'write',  # SET can only write
    );
 }
 
-sub _get_cats_from_conditions {
+sub _parse_conditions {
    my ( $self, %args ) = @_;
-   my @required_args = qw(context access tables conditions);
+   my @required_args = qw(conditions tables);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($context, $access, $tables, $conditions) = @args{@required_args};
+   my ($conditions, $tables) = @args{@required_args};
    my $sql_parser = $self->{SQLParser};
 
-   my @cats;
+   my @condition_structs;
    my %seen_table;
    CONDITION:
    foreach my $cond ( @$conditions ) {
@@ -353,6 +386,8 @@ sub _get_cats_from_conditions {
       # any case for simplicity.
       my $col = $sql_parser->parse_identifier('column', $cond->{column});
 
+      # Try to determine the column's table and database if it wasn't
+      # already db- or tbl-qualified.
       my $tbl;
       if ( $cond->{tbl} || $col->{tbl} ) {
          $tbl = $self->_get_real_table_name(
@@ -381,19 +416,49 @@ sub _get_cats_from_conditions {
          $db = $tables->[0]->{db};
       }
 
+      # Determine if the value is another table or something else.
+      # If it's another table, then this condition is acting as an
+      # implicit JOIN (instead of an ANSI JOIN in the FROM clause).
+      my $value;
+      my $join = 0;
+      if ( $sql_parser->is_identifier($cond->{value}) ) {
+         $join = 1;
+         my $join_col = $sql_parser->parse_identifier('column', $cond->{value});
+         if ( !$join_col->{tbl} ) {
+            warn "Implicitly joined table in WHERE clause is not "
+               . "table-qualified: $cond->{value}";
+            next CONDITION;
+         }
+
+         my $db  = $join_col->{db} || $args{default_db};
+         my $tbl = $self->_get_real_table_name(
+            %args,
+            name => $join_col->{tbl},
+         );
+
+         $value = ($db ? "$db." : "") . $tbl;
+      }
+      else {
+         # Value is not a table ref, so it may be a constant, a function, etc.
+         # In any case, we treat it as the dummy DUAL value because if it's
+         # not a table ref then we don't care what it is.
+         $value = 'DUAL';
+      }
+
       my $db_tbl = ($db ? "$db." : "") . $tbl;
-      if ( !$seen_table{$db_tbl}++ ) {
-         my $cat = {
-            context => $context,
-            access  => $access,
-            table   => $db_tbl,
+      if ( !$seen_table{$db_tbl}++ || $join ) {
+         my $cond_struct = {
+            table  => $db_tbl,
+            column => $col->{name},
+            value  => $value,
+            join   => $join,
          };
-         MKDEBUG && _d("Table access:", Dumper($cat));
-         push @cats, $cat;
+         MKDEBUG && _d("Condition struct:", Dumper($cond_struct));
+         push @condition_structs, $cond_struct;
       }
    }
 
-   return \@cats;
+   return \@condition_structs;
 }
 
 sub _get_real_table_name {
@@ -415,6 +480,35 @@ sub _get_real_table_name {
    return;
 }
 
+sub _qualify_table_name {
+   my ( $self, %args) = @_;
+   my @required_args = qw(tables tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $tbl) = @args{@required_args};
+
+   # Always use real table names, not alias.
+   my $real_tbl = $self->_get_real_table_name(%args, name => $tbl);
+   return unless $real_tbl;  # shouldn't happen
+
+   # The easy case: a db is already given, so use it.
+   return "$args{db}.$real_tbl" if $args{db};
+
+   # If no db is given, see if the table is db-qualified.
+   foreach my $tbl ( @$tables ) {
+      if ( $tbl->{name} eq $real_tbl && $tbl->{db} ) {
+         return "$tbl->{db}.$real_tbl";
+      }
+   }
+
+   # Last resort: use default db if it's given.
+   return "$args{default_db}.$real_tbl" if $args{default_db};
+
+   # Can't db-qualify the table, so return just the real table name.
+   return $real_tbl;
+}
+
 sub _d {
    my ($package, undef, $line) = caller 0;
    @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
@@ -427,5 +521,5 @@ sub _d {
 1;
 
 # ###########################################################################
-# End TableAccess package
+# End TableUsage package
 # ###########################################################################

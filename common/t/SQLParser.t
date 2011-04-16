@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 118;
+use Test::More tests => 126;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -30,6 +30,29 @@ throws_ok(
    qr/Cannot parse DROP queries/,
    "Dies if statement type cannot be parsed"
 );
+
+
+# ############################################################################
+# is_identifier
+# ############################################################################
+sub test_is_identifier {
+   my ( $thing, $expect ) = @_;
+   is(
+      $sp->is_identifier($thing),
+      $expect,
+      "$thing is" . ($expect ? "" : " not") . " an ident"
+   );
+   return;
+}
+
+test_is_identifier("tbl",        1);
+test_is_identifier("`tbl`",      1);
+test_is_identifier("'tbl'",      0);
+test_is_identifier("\"tbl\"",    0);
+test_is_identifier('db.tbl',     1);
+test_is_identifier('"db.tbl"',   0);
+test_is_identifier('db.tbl.col', 1);
+test_is_identifier('1',          0);
 
 # #############################################################################
 # WHERE where_condition

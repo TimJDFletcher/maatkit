@@ -14,7 +14,7 @@ use Test::More tests => 11;
 use MaatkitTest;
 use QueryParser;
 use SQLParser;
-use TableAccess;
+use TableUsage;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -23,12 +23,12 @@ $Data::Dumper::Quotekeys = 0;
 
 my $qp = new QueryParser();
 my $sp = new SQLParser();
-my $ta = new TableAccess(QueryParser => $qp, SQLParser => $sp);
-isa_ok($ta, 'TableAccess');
+my $ta = new TableUsage(QueryParser => $qp, SQLParser => $sp);
+isa_ok($ta, 'TableUsage');
 
-sub test_get_table_access {
+sub test_get_table_usage {
    my ( $query, $cats, $desc ) = @_;
-   my $got = $ta->get_table_access(query=>$query);
+   my $got = $ta->get_table_usage(query=>$query);
    is_deeply(
       $got,
       $cats,
@@ -37,29 +37,113 @@ sub test_get_table_access {
    return;
 }
 
-test_get_table_access(
-   "DELETE FROM d.t WHERE type != 'D' OR type IS NULL",
+test_get_table_usage(
+   "SELECT * FROM d.t WHERE id>100",
    [
-      { table   => 'd.t',
-        context => 'DELETE',
-        access  => 'write',
-      },
-      { table   => 'd.t',
-        context => 'WHERE',
-        access  => 'read',
-      },
+      [
+         { context => 'SELECT',
+           table   => 'd.t',
+         },
+         { context => 'WHERE',
+           table   => 'd.t',
+         },
+      ],
    ],
-   "Simple DELETE"
+   "SELECT FROM one table"
 ); 
 
-test_get_table_access(
+test_get_table_usage(
+   "SELECT t1.* FROM d.t1 LEFT JOIN d.t2 USING (id) WHERE d.t2.foo IS NULL",
+   [
+      [
+         { context => 'SELECT',
+           table   => 'd.t1',
+         },
+         { context => 'JOIN',
+           table   => 'd.t1',
+         },
+         { context => 'JOIN',
+           table   => 'd.t2',
+         },
+         { context => 'WHERE',
+           table   => 'd.t2',
+         },
+      ],
+   ],
+   "SELECT JOIN two tables"
+); 
+
+test_get_table_usage(
+   "DELETE FROM d.t WHERE type != 'D' OR type IS NULL",
+   [
+      [
+         { context => 'DELETE',
+           table   => 'd.t',
+         },
+         { context => 'WHERE',
+           table   => 'd.t',
+         },
+      ],
+   ],
+   "DELETE one table"
+); 
+
+test_get_table_usage(
+   "INSERT INTO d.t (col1, col2) VALUES ('a', 'b')",
+   [
+      [
+         { context => 'INSERT',
+           table   => 'd.t',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+      ],
+   ],
+   "INSERT VALUES, no SELECT"
+); 
+
+test_get_table_usage(
+   "INSERT INTO d.t SET col1='a', col2='b'",
+   [
+      [
+         { context => 'INSERT',
+           table   => 'd.t',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+      ],
+   ],
+   "INSERT SET, no SELECT"
+); 
+
+test_get_table_usage(
+   "UPDATE d.t SET foo='bar' WHERE foo IS NULL",
+   [
+      [
+         { context => 'UPDATE',
+           table   => 'd.t',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+         { context => 'WHERE',
+           table   => 'd.t',
+         },
+      ],
+   ],
+   "UPDATE one table"
+); 
+
+test_get_table_usage(
    "SELECT * FROM zn.edp
       INNER JOIN zn.edp_input_key edpik     ON edp = edp.id
       INNER JOIN `zn`.`key`       input_key ON edpik.input_key = input_key.id
       WHERE edp.id = 296",
    [
       { context => 'SELECT',
-        access  => 'read',
+        usage  => 'read',
         table   => 'zn.edp',
       },
       { context => 'JOIN',

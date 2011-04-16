@@ -1174,6 +1174,44 @@ sub split_unquote {
    return ($db, $tbl);
 }
 
+# Sub: is_identifier
+#   Determine if something is a schema object identifier.
+#   E.g.: `tbl` is an identifier, but "tbl" is a string and 1 is a number.
+#   See <http://dev.mysql.com/doc/refman/5.1/en/identifiers.html>
+#
+# Parameters:
+#   $thing - Name of something, including any quoting as it appears in a query.
+#
+# Returns:
+#   True of $thing is an identifier, else false.
+sub is_identifier {
+   my ( $self, $thing ) = @_;
+
+   # Nothing is not an ident.
+   return 0 unless $thing;
+
+   # Tables, columns, FUNCTIONS(), etc. cannot be 'quoted' or "quoted"
+   # because that would make them strings, not idents.
+   return 0 if $thing =~ m/\s*['"]/;
+
+   # Numbers, ints or floats, are not identifiers.
+   return 0 if $thing =~ m/^\s*\d+(?:\.\d+)?\s*$/;
+
+   # Keywords are not identifiers.
+   return 0 if $thing =~ m/^\s*(?>
+       NULL
+      |DUAL
+   )\s*$/xi;
+
+   # The column ident really matches everything: db, db.tbl, db.tbl.col,
+   # function(), @@var, etc.
+   return 1 if $thing =~ m/^\s*$column_ident\s*$/;
+
+   # If the thing isn't quoted and doesn't match our ident pattern, then
+   # it's probably not an ident.
+   return 0;
+}
+
 sub _d {
    my ($package, undef, $line) = caller 0;
    @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
