@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 11;
+use Test::More tests => 17;
 
 use MaatkitTest;
 use QueryParser;
@@ -37,6 +37,9 @@ sub test_get_table_usage {
    return;
 }
 
+# ############################################################################
+# Queries parsable by SQLParser: SELECT, INSERT, UPDATE and DELETE
+# ############################################################################
 test_get_table_usage(
    "SELECT * FROM d.t WHERE id>100",
    [
@@ -138,181 +141,250 @@ test_get_table_usage(
 
 test_get_table_usage(
    "SELECT * FROM zn.edp
-      INNER JOIN zn.edp_input_key edpik     ON edp = edp.id
+      INNER JOIN zn.edp_input_key edpik     ON edp.id = edpik.id
       INNER JOIN `zn`.`key`       input_key ON edpik.input_key = input_key.id
       WHERE edp.id = 296",
    [
-      { context => 'SELECT',
-        usage  => 'read',
-        table   => 'zn.edp',
-      },
-      { context => 'JOIN',
-        access  => 'read',
-        table   => 'zn.edp_input_key',
-      },
-      { context => 'JOIN',
-        access  => 'read',
-        table   => 'zn.key',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 'edp',
-      },
+      [
+         { context => 'SELECT',
+           table   => 'zn.edp',
+         },
+         { context => 'SELECT',
+           table   => 'zn.edp_input_key',
+         },
+         { context => 'SELECT',
+           table   => 'zn.key',
+         },
+         { context => 'JOIN',
+           table   => 'zn.edp',
+         },
+         { context => 'JOIN',
+           table   => 'zn.edp_input_key',
+         },
+         { context => 'JOIN',
+           table   => 'zn.key',
+         },
+         { context => 'WHERE',
+           table   => 'zn.edp',
+         },
+      ],
    ],
    "SELECT with 2 JOIN and WHERE"
 );
 
-test_get_table_access(
+test_get_table_usage(
    "REPLACE INTO db.tblA (dt, ncpc)
       SELECT dates.dt, scraped.total_r
         FROM tblB          AS dates
         LEFT JOIN dbF.tblC AS scraped
           ON dates.dt = scraped.dt AND dates.version = scraped.version",
    [
-      { context => 'REPLACE',
-        access  => 'write',
-        table   => 'db.tblA',
-      },
-      { context => 'REPLACE',
-        access  => 'read',
-        table   => 'tblB',
-      },
-      { context => 'REPLACE',
-        access  => 'read',
-        table   => 'dbF.tblC',
-      },
+      [
+         { context => 'REPLACE',
+           table   => 'db.tblA',
+         },
+         { context => 'SELECT',
+           table   => 'tblB',
+         },
+         { context => 'SELECT',
+           table   => 'dbF.tblC',
+         },
+         { context => 'JOIN',
+           table   => 'tblB',
+         },
+         { context => 'JOIN',
+           table   => 'dbF.tblC',
+         },
+      ],
    ],
    "REPLACE SELECT JOIN"
 );
 
-test_get_table_access(
-   "ALTER TABLE tt.ks ADD PRIMARY KEY(`d`,`v`)",
-   [
-      { context => 'ALTER',
-        access  => 'write',
-        table   => 'tt.ks',
-      },
-   ],
-   "ALTER TABLE"
-);
-
-test_get_table_access(
+test_get_table_usage(
    'UPDATE t1 AS a JOIN t2 AS b USING (id) SET a.foo="bar" WHERE b.foo IS NOT NULL',
    [
-      { context => 'UPDATE',
-        access  => 'write',
-        table   => 't1',
-      },
-      { context => 'UPDATE',
-        access  => 'read',
-        table   => 't1',
-      },
-      { context => 'JOIN',
-        access  => 'read',
-        table   => 't2',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 't2',
-      },
+      [
+         { context => 'UPDATE',
+           table   => 't1',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+         { context => 'JOIN',
+           table   => 't1',
+         },
+         { context => 'JOIN',
+           table   => 't2',
+         },
+         { context => 'WHERE',
+           table   => 't2',
+         },
+      ],
    ],
    "UPDATE joins 2 tables, writes to 1, filters by 1"
 );
 
-test_get_table_access(
+test_get_table_usage(
    'UPDATE t1 INNER JOIN t2 USING (id) SET t1.foo="bar" WHERE t1.id>100 AND t2.id>200',
    [
-      { context => 'UPDATE',
-        access  => 'write',
-        table   => 't1',
-      },
-      { context => 'UPDATE',
-        access  => 'read',
-        table   => 't1',
-      },
-      { context => 'JOIN',
-        access  => 'read',
-        table   => 't2',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 't1',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 't2',
-      },
+      [
+         { context => 'UPDATE',
+           table   => 't1',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+         { context => 'JOIN',
+           table   => 't1',
+         },
+         { context => 'JOIN',
+           table   => 't2',
+         },
+         { context => 'WHERE',
+           table   => 't1',
+         },
+         { context => 'WHERE',
+           table   => 't2',
+         },
+      ],
    ],
-   "UPDATE joins 2 tables, writes to 2, filters by 2"
+   "UPDATE joins 2 tables, writes to 1, filters by 2"
 );
 
-test_get_table_access(
+test_get_table_usage(
    'UPDATE t1 AS a JOIN t2 AS b USING (id) SET a.foo="bar", b.foo="bat" WHERE a.id=1',
    [
-      { context => 'UPDATE',
-        access  => 'write',
-        table   => 't1',
-      },
-      { context => 'UPDATE',
-        access  => 'write',
-        table   => 't2',
-      },
-      { context => 'UPDATE',
-        access  => 'read',
-        table   => 't1',
-      },
-      { context => 'JOIN',
-        access  => 'read',
-        table   => 't2',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 't1',
-      },
+      [
+         { context => 'UPDATE',
+           table   => 't1',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+         { context => 'JOIN',
+           table   => 't1',
+         },
+         { context => 'JOIN',
+           table   => 't2',
+         },
+         { context => 'WHERE',
+           table   => 't1',
+         },
+      ],
+      [
+         { context => 'UPDATE',
+           table   => 't2',
+         },
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+         { context => 'JOIN',
+           table   => 't1',
+         },
+         { context => 'JOIN',
+           table   => 't2',
+         },
+         { context => 'WHERE',
+           table   => 't1',
+         },
+      ],
    ],
    "UPDATE joins 2 tables, writes to 2, filters by 1"
 );
 
-test_get_table_access(
+test_get_table_usage(
    'insert into t1 (a, b, c) select x, y, z from t2 where x is not null',
    [
-      { context => 'INSERT',
-        access  => 'write',
-        table   => 't1',
-      },
-      { context => 'INSERT',
-        access  => 'read',
-        table   => 't2',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 't2',
-      },
+      [
+         { context => 'INSERT',
+           table   => 't1',
+         },
+         { context => 'SELECT',
+           table   => 't2',
+         },
+         { context => 'WHERE',
+           table   => 't2',
+         },
+      ],
    ],
    "INSERT INTO t1 SELECT FROM t2",
 );
 
-test_get_table_access(
+test_get_table_usage(
    'insert into t (a, b, c) select a.x, a.y, b.z from a, b where a.id=b.id',
    [
-      { context => 'INSERT',
-        access  => 'write',
-        table   => 't',
-      },
-      { context => 'INSERT',
-        access  => 'read',
-        table   => 'a',
-      },
-      { context => 'INSERT',
-        access  => 'read',
-        table   => 'b',
-      },
-      { context => 'WHERE',
-        access  => 'read',
-        table   => 'a',
-      },
+      [
+         { context => 'INSERT',
+           table   => 't',
+         },
+         { context => 'SELECT',
+           table   => 'a',
+         },
+         { context => 'SELECT',
+           table   => 'b',
+         },
+         { context => 'JOIN',
+           table   => 'a',
+         },
+         { context => 'JOIN',
+            table  => 'b',
+         },
+      ],
    ],
    "INSERT INTO t SELECT FROM a, b"
+);
+
+test_get_table_usage(
+   'INSERT INTO bar
+      SELECT edpik.* 
+         FROM zn.edp 
+            INNER JOIN zn.edp_input_key AS edpik ON edpik.id = edp.id 
+            INNER JOIN `zn`.`key` input_key 
+            INNER JOIN foo
+         WHERE edp.id = 296
+            AND edpik.input_key = input_key.id',
+   [
+      [
+         { context => 'INSERT',
+           table   => 'bar',
+         },
+         { context => 'SELECT',
+           table   => 'zn.edp_input_key',
+         },
+         { context => 'JOIN',
+           table   => 'zn.edp',
+         },
+         { context => 'JOIN',
+           table   => 'zn.edp_input_key',
+         },
+         { context => 'JOIN',
+           table   => 'zn.key',
+         },
+         { context => 'TLIST',
+           table   => 'foo',
+         },
+         { context => 'WHERE',
+           table   => 'zn.edp',
+         },
+
+      ],
+   ],
+   "INSERT SELECT with TLIST table"
+);
+
+# ############################################################################
+# Queries parsable by QueryParser
+# ############################################################################
+test_get_table_usage(
+   "ALTER TABLE tt.ks ADD PRIMARY KEY(`d`,`v`)",
+   [
+      [
+         { context => 'ALTER',
+         table   => 'tt.ks',
+         },
+      ],
+   ],
+   "ALTER TABLE"
 );
 
 # #############################################################################

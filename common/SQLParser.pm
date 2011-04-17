@@ -531,7 +531,7 @@ sub parse_from {
             # a simple csv list of column names without aliases, etc.
             $join_condition_value =~ s/^\s*\(//;
             $join_condition_value =~ s/\)\s*$//;
-            $join->{columns} = $self->parse_csv($join_condition_value);
+            $join->{columns} = $self->_parse_csv($join_condition_value);
          }
       }
       elsif ( $thing =~ m/(?:,|JOIN)/i ) {
@@ -550,7 +550,7 @@ sub parse_from {
          # Next table ref becomes the current table ref.  It's joined to
          # the previous table ref either implicitly (comma join) or explicitly
          # (ansi join).
-         $join->{to} = $tbls[-1]->{name};
+         $join->{to} = $tbls[-1]->{tbl};
          if ( $thing eq ',' ) {
             $join->{type} = 'inner';
             $join->{ansi} = 0;
@@ -700,22 +700,31 @@ sub parse_where {
    # are supported.  E.g. - (minus) is an op but does it ever show up
    # in a where clause?  "col-3=2" is valid (where col=5), but we're
    # not interested in weird stuff like that.
-   my $op = qr/
-      (?:\b|\s)
+   my $op_symbol = qr/
       (?:
-          <=
-         |>=
-         |<>
-         |!=
-         |<
-         |>
-         |=
-         |(?:NOT\s)?LIKE
-         |IS(?:\sNOT\s)?
-         |(?:\sNOT\s)?BETWEEN
-         |(?:NOT\s)?IN
+       <=
+      |>=
+      |<>
+      |!=
+      |<
+      |>
+      |=
+   )/xi;
+   my $op_verb = qr/
+      (?:
+          (?:(?:NOT\s)?LIKE)
+         |(?:IS(?:\sNOT\s)?)
+         |(?:(?:\sNOT\s)?BETWEEN)
+         |(?:(?:NOT\s)?IN)
       )
    /xi;
+   my $op_pat = qr/
+   (
+      (?>
+          (?:$op_symbol)  # don't need spaces around the symbols, e.g.: col=1
+         |(?:\s+$op_verb) # must have space before verb op, e.g.: col LIKE ...
+      )
+   )/x;
 
    # Step 1 and 2: split on and|or and look for operators.
    my $offset = 0;
@@ -727,14 +736,14 @@ sub parse_where {
 
       $pred = substr $where, $offset, ($pos-$offset);
       push @pred, $pred;
-      push @has_op, $pred =~ m/$op/io ? 1 : 0;
+      push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
 
       $offset = $pos;
    }
    # Final predicate fragment: last and|or to end of string.
    $pred = substr $where, $offset;
    push @pred, $pred;
-   push @has_op, $pred =~ m/$op/io ? 1 : 0;
+   push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
    MKDEBUG && _d("Predicate fragments:", Dumper(\@pred));
    MKDEBUG && _d("Predicate frags with operators:", @has_op);
 
@@ -784,13 +793,13 @@ sub parse_where {
       if ( $pred =~ s/^(and|or)\s+//i ) {
          $conj = lc $1;
       }
-      my ($col, $op, $val) = $pred =~ m/^(.+?)($op)(.*)/; 
+      my ($col, $op, $val) = $pred =~ m/^(.+?)$op_pat(.+)$/o;
       if ( !$col || !$op ) {
          if ( $self->_is_constant($pred) ) {
             $val = lc $pred;
          }
          else {
-            die "Failed to parse predicate: $pred";
+            die "Failed to parse WHERE condition: $pred";
          }
       }
 
@@ -810,10 +819,10 @@ sub parse_where {
       $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
 
       push @predicates, {
-         column    => $col,
-         operator  => $op,
-         value     => $val,
          predicate => $conj,
+         left_arg  => $col,
+         operator  => $op,
+         right_arg => $val,
       };
    }
 
@@ -846,7 +855,7 @@ sub parse_group_by {
    my $with_rollup = $group_by =~ s/\s+WITH ROLLUP\s*//i;
 
    # Parse the identifers.
-   my $idents = $self->parse_identifiers( $self->parse_csv($group_by) );
+   my $idents = $self->parse_identifiers( $self->_parse_csv($group_by) );
 
    $idents->{with_rollup} = 1 if $with_rollup;
 
@@ -858,7 +867,7 @@ sub parse_order_by {
    my ( $self, $order_by ) = @_;
    return unless $order_by;
    MKDEBUG && _d('Parsing ORDER BY', $order_by);
-   my $idents = $self->parse_identifiers( $self->parse_csv($order_by) );
+   my $idents = $self->parse_identifiers( $self->_parse_csv($order_by) );
    return $idents;
 }
 
@@ -887,40 +896,34 @@ sub parse_limit {
 sub parse_values {
    my ( $self, $values ) = @_;
    return unless $values;
-   # split(',', $values) will not work (without some kind of regex
-   # look-around assertion) because there are commas inside the sets
-   # of values.
-   my @vals = ($values =~ m/\([^\)]+\)/g);
-   return \@vals;
+   $values =~ s/^\s*\(//;
+   $values =~ s/\s*\)//;
+   my $vals = $self->_parse_csv(
+      $values,
+      quoted_values => 1,
+      remove_quotes => 0,
+   );
+   return $vals;
 }
 
 sub parse_set {
    my ( $self, $set ) = @_;
    MKDEBUG && _d("Parse SET", $set);
    return unless $set;
-   my $vals = $self->parse_csv($set);
+   my $vals = $self->_parse_csv($set);
    return unless $vals && @$vals;
 
    my @set;
    foreach my $col_val ( @$vals ) {
-      my ($tbl_col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
-
-      # Remove quotes around value.
-      my ($c) = $val =~ m/^(['"])/;
-      if ( $c ) {
-         $val =~ s/^$c//;
-         $val =~ s/$c$//;
-      }
-
-      # Parser db.tbl.col.
-      my ($col, $tbl, $db) = reverse split(/\./, $tbl_col);
-
-      my $set_struct = {
-         column => $col,
-         value  => $val,
+      # Do not remove quotes around the val because quotes let us determine
+      # the value's type.  E.g. tbl might be a table, but "tbl" is a string,
+      # and NOW() is the function, but 'NOW()' is a string.
+      my ($col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
+      my $ident_struct = $self->parse_identifier('column', $col);
+      my $set_struct   = {
+         %$ident_struct,
+         value => $val,
       };
-      $set_struct->{tbl} = $tbl if $tbl;
-      $set_struct->{db}  = $db  if $db;
       MKDEBUG && _d("SET:", Dumper($set_struct));
       push @set, $set_struct;
    }
@@ -929,15 +932,89 @@ sub parse_set {
 
 # Split any comma-separated list of values, removing leading
 # and trailing spaces.
-sub parse_csv {
-   my ( $self, $vals ) = @_;
+sub _parse_csv {
+   my ( $self, $vals, %args ) = @_;
    return unless $vals;
-   my @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+
+   my @vals;
+   if ( $args{quoted_values} ) {
+      # If the vals are quoted, then they can contain commas, like:
+      # "hello, world!", 'batman'.  If only we could use Text::CSV,
+      # then I wouldn't write yet another csv parser to handle this,
+      # but Maatkit doesn't like package dependencies, so here's my
+      # light implementation of this classic problem.
+      my $quote_char   = '';
+      VAL:
+      foreach my $val ( split(',', $vals) ) {
+         MKDEBUG && _d("Next value:", $val);
+         # If there's a quote char, then this val is the rest of a previously
+         # quoted and split value.
+         if ( $quote_char ) {
+            MKDEBUG && _d("Value is part of previous quoted value");
+            # split() removed the comma inside the quoted value,
+            # so add it back else "hello, world" is incorrectly
+            # returned as "hello world".
+            $vals[-1] .= ",$val";
+
+            # Quoted and split value is complete when a val ends with the
+            # same quote char that began the split value.
+            if ( $val =~ m/[^\\]*$quote_char$/ ) {
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+               MKDEBUG && _d("Previous quoted value is complete:", $vals[-1]);
+               $quote_char = '';
+            }
+
+            next VAL;
+         }
+
+         # Start of new value so strip leading spaces but not trailing
+         # spaces yet because if the next check determines that this is
+         # a quoted and split val, then trailing space is actually space
+         # inside the quoted val, so we want to preserve it.
+         $val =~ s/^\s+//;
+
+         # A value is quoted *and* split (because there's a comma in the
+         # quoted value) if the vale begins with a quote char and does not
+         # end with that char.  E.g.: "foo but not "foo".  The val "foo is
+         # the first part of the split value, e.g. "foo, bar".
+         if ( $val =~ m/^(['"])/ ) {
+            MKDEBUG && _d("Value is quoted");
+            $quote_char = $1;  # XXX
+            if ( $val =~ m/.$quote_char$/ ) {
+               MKDEBUG && _d("Value is complete");
+               $quote_char = '';
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+            }
+            else {
+               MKDEBUG && _d("Quoted value is not complete");
+            }
+         }
+         else {
+            $val =~ s/\s+$//;
+         }
+
+         # Save complete value (e.g. foo or "foo" without the quotes),
+         # or save the first part of a quoted and split value; the rest
+         # of such a value will be joined back above.
+         MKDEBUG && _d("Saving value", ($quote_char ? "fragment" : ""));
+         push @vals, $val;
+      }
+   }
+   else {
+      @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+   }
+
    return \@vals;
 }
 {
    no warnings;  # Why? See same line above.
-   *parse_on_duplicate = \&parse_csv;
+   *parse_on_duplicate = \&_parse_csv;
 }
 
 sub parse_columns {
@@ -1133,16 +1210,17 @@ sub parse_identifier {
    my %ident_struct;
    my @ident_parts = map { s/`//g; $_; } split /[.]/, $ident;
    if ( @ident_parts == 3 ) {
-      @ident_struct{qw(db tbl name)} = @ident_parts;
+      @ident_struct{qw(db tbl col)} = @ident_parts;
    }
    elsif ( @ident_parts == 2 ) {
-      my @parts_for_type = $type eq 'column' ? qw(tbl name)
-                         : $type eq 'table'  ? qw(db  name)
+      my @parts_for_type = $type eq 'column' ? qw(tbl col)
+                         : $type eq 'table'  ? qw(db  tbl)
                          : die "Invalid identifier type: $type";
       @ident_struct{@parts_for_type} = @ident_parts;
    }
    elsif ( @ident_parts == 1 ) {
-      @ident_struct{qw(name)} = @ident_parts;
+      my $part = $type eq 'column' ? 'col' : 'tbl';
+      @ident_struct{($part)} = @ident_parts;
    }
    else {
       die "Invalid number of parts in $type reference: $ident";
