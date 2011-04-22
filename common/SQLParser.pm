@@ -806,7 +806,7 @@ sub parse_where {
       # Remove whitespace and lowercase some keywords.
       if ( $col ) {
          $col =~ s/\s+$//;
-         $col =~ s/^\(//;  # no unquoted column name begins with (
+         $col =~ s/^\(+//;  # no unquoted column name begins with (
       }
       if ( $op ) {
          $op  =  lc $op;
@@ -814,9 +814,15 @@ sub parse_where {
          $op  =~ s/\s+$//;
       }
       $val =~ s/^\s+//;
-      # no unquoted value ends with ) except <function>(...)
-      $val =~ s/\)$// if ($op || '') !~ m/in/i && $val !~ m/^\w+\([^\)]+\)$/;
-      $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
+      
+      # No unquoted value ends with ) except FUNCTION(...)
+      if ( ($op || '') !~ m/IN/i && $val !~ m/^\w+\([^\)]+\)$/ ) {
+         $val =~ s/\)+$//;
+      }
+
+      if ( $val =~ m/NULL|TRUE|FALSE/i ) {
+         $val = lc $val;
+      }
 
       push @predicates, {
          predicate => $conj,

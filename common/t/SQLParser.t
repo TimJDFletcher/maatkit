@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 134;
+use Test::More tests => 135;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -110,7 +110,8 @@ sub test_where {
    is_deeply(
       $sp->parse_where($where),
       $struct,
-      "WHERE $where"
+      "WHERE " . substr($where, 0, 60) 
+         . (length $where > 60 ? '...' : ''),
    );
 };
 
@@ -411,6 +412,30 @@ test_where(
          operator  => '=',
          right_arg => 'input_key.id'
       },
+   ]
+);
+
+test_where(
+   "((`sakila`.`city`.`country_id` = `sakila`.`country`.`country_id`) and (`sakila`.`country`.`country` = 'Brazil') and (`sakila`.`city`.`city` like 'A%'))",
+   [
+      {
+         predicate => undef,
+         left_arg  => '`sakila`.`city`.`country_id`',
+         operator  => '=',
+         right_arg => '`sakila`.`country`.`country_id`'
+      },
+      {
+        predicate => 'and',
+        left_arg  => '`sakila`.`country`.`country`',
+        operator  => '=',
+        right_arg => '\'Brazil\''
+      },
+      {
+        predicate => 'and',
+        left_arg  => '`sakila`.`city`.`city`',
+        operator  => 'like',
+        right_arg => '\'A%\''
+      }
    ]
 );
 
