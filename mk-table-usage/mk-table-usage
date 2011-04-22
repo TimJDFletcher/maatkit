@@ -1403,6 +1403,455 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
+# SlowLogParser package 7096
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/SlowLogParser.pm
+#   trunk/common/t/SlowLogParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package SlowLogParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Data::Dumper;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class ) = @_;
+   my $self = {
+      pending => [],
+   };
+   return bless $self, $class;
+}
+
+my $slow_log_ts_line = qr/^# Time: ([0-9: ]{15})/;
+my $slow_log_uh_line = qr/# User\@Host: ([^\[]+|\[[^[]+\]).*?@ (\S*) \[(.*)\]/;
+my $slow_log_hd_line = qr{
+      ^(?:
+      T[cC][pP]\s[pP]ort:\s+\d+ # case differs on windows/unix
+      |
+      [/A-Z].*mysqld,\sVersion.*(?:started\swith:|embedded\slibrary)
+      |
+      Time\s+Id\s+Command
+      ).*\n
+   }xm;
+
+sub parse_event {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(next_event tell);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($next_event, $tell) = @args{@required_args};
+
+   my $pending = $self->{pending};
+   local $INPUT_RECORD_SEPARATOR = ";\n#";
+   my $trimlen    = length($INPUT_RECORD_SEPARATOR);
+   my $pos_in_log = $tell->();
+   my $stmt;
+
+   EVENT:
+   while (
+         defined($stmt = shift @$pending)
+      or defined($stmt = $next_event->())
+   ) {
+      my @properties = ('cmd', 'Query', 'pos_in_log', $pos_in_log);
+      $pos_in_log = $tell->();
+
+      if ( $stmt =~ s/$slow_log_hd_line//go ){ # Throw away header lines in log
+         my @chunks = split(/$INPUT_RECORD_SEPARATOR/o, $stmt);
+         if ( @chunks > 1 ) {
+            MKDEBUG && _d("Found multiple chunks");
+            $stmt = shift @chunks;
+            unshift @$pending, @chunks;
+         }
+      }
+
+      $stmt = '#' . $stmt unless $stmt =~ m/\A#/;
+      $stmt =~ s/;\n#?\Z//;
+
+
+      my ($got_ts, $got_uh, $got_ac, $got_db, $got_set, $got_embed);
+      my $pos = 0;
+      my $len = length($stmt);
+      my $found_arg = 0;
+      LINE:
+      while ( $stmt =~ m/^(.*)$/mg ) { # /g is important, requires scalar match.
+         $pos     = pos($stmt);  # Be careful not to mess this up!
+         my $line = $1;          # Necessary for /g and pos() to work.
+         MKDEBUG && _d($line);
+
+         if ($line =~ m/^(?:#|use |SET (?:last_insert_id|insert_id|timestamp))/o) {
+
+            if ( !$got_ts && (my ( $time ) = $line =~ m/$slow_log_ts_line/o)) {
+               MKDEBUG && _d("Got ts", $time);
+               push @properties, 'ts', $time;
+               ++$got_ts;
+               if ( !$got_uh
+                  && ( my ( $user, $host, $ip ) = $line =~ m/$slow_log_uh_line/o )
+               ) {
+                  MKDEBUG && _d("Got user, host, ip", $user, $host, $ip);
+                  push @properties, 'user', $user, 'host', $host, 'ip', $ip;
+                  ++$got_uh;
+               }
+            }
+
+            elsif ( !$got_uh
+                  && ( my ( $user, $host, $ip ) = $line =~ m/$slow_log_uh_line/o )
+            ) {
+               MKDEBUG && _d("Got user, host, ip", $user, $host, $ip);
+               push @properties, 'user', $user, 'host', $host, 'ip', $ip;
+               ++$got_uh;
+            }
+
+            elsif (!$got_ac && $line =~ m/^# (?:administrator command:.*)$/) {
+               MKDEBUG && _d("Got admin command");
+               $line =~ s/^#\s+//;  # string leading "# ".
+               push @properties, 'cmd', 'Admin', 'arg', $line;
+               push @properties, 'bytes', length($properties[-1]);
+               ++$found_arg;
+               ++$got_ac;
+            }
+
+            elsif ( $line =~ m/^# +[A-Z][A-Za-z_]+: \S+/ ) { # Make the test cheap!
+               MKDEBUG && _d("Got some line with properties");
+
+               if ( $line =~ m/Schema:\s+\w+: / ) {
+                  MKDEBUG && _d('Removing empty Schema attrib');
+                  $line =~ s/Schema:\s+//;
+                  MKDEBUG && _d($line);
+               }
+
+               my @temp = $line =~ m/(\w+):\s+(\S+|\Z)/g;
+               push @properties, @temp;
+            }
+
+            elsif ( !$got_db && (my ( $db ) = $line =~ m/^use ([^;]+)/ ) ) {
+               MKDEBUG && _d("Got a default database:", $db);
+               push @properties, 'db', $db;
+               ++$got_db;
+            }
+
+            elsif (!$got_set && (my ($setting) = $line =~ m/^SET\s+([^;]*)/)) {
+               MKDEBUG && _d("Got some setting:", $setting);
+               push @properties, split(/,|\s*=\s*/, $setting);
+               ++$got_set;
+            }
+
+            if ( !$found_arg && $pos == $len ) {
+               MKDEBUG && _d("Did not find arg, looking for special cases");
+               local $INPUT_RECORD_SEPARATOR = ";\n";
+               if ( defined(my $l = $next_event->()) ) {
+                  chomp $l;
+                  $l =~ s/^\s+//;
+                  MKDEBUG && _d("Found admin statement", $l);
+                  push @properties, 'cmd', 'Admin', 'arg', $l;
+                  push @properties, 'bytes', length($properties[-1]);
+                  $found_arg++;
+               }
+               else {
+                  MKDEBUG && _d("I can't figure out what to do with this line");
+                  next EVENT;
+               }
+            }
+         }
+         else {
+            MKDEBUG && _d("Got the query/arg line");
+            my $arg = substr($stmt, $pos - length($line));
+            push @properties, 'arg', $arg, 'bytes', length($arg);
+            if ( $args{misc} && $args{misc}->{embed}
+               && ( my ($e) = $arg =~ m/($args{misc}->{embed})/)
+            ) {
+               push @properties, $e =~ m/$args{misc}->{capture}/g;
+            }
+            last LINE;
+         }
+      }
+
+      MKDEBUG && _d('Properties of event:', Dumper(\@properties));
+      my $event = { @properties };
+      return $event;
+   } # EVENT
+
+   @$pending = ();
+   $args{oktorun}->(0) if $args{oktorun};
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End SlowLogParser package
+# ###########################################################################
+
+# ###########################################################################
+# Transformers package 7226
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Transformers.pm
+#   trunk/common/t/Transformers.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Transformers;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Time::Local qw(timegm timelocal);
+use Digest::MD5 qw(md5_hex);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+require Exporter;
+our @ISA         = qw(Exporter);
+our %EXPORT_TAGS = ();
+our @EXPORT      = ();
+our @EXPORT_OK   = qw(
+   micro_t
+   percentage_of
+   secs_to_time
+   time_to_secs
+   shorten
+   ts
+   parse_timestamp
+   unix_timestamp
+   any_unix_timestamp
+   make_checksum
+   crc32
+);
+
+our $mysql_ts  = qr/(\d\d)(\d\d)(\d\d) +(\d+):(\d+):(\d+)(\.\d+)?/;
+our $proper_ts = qr/(\d\d\d\d)-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?/;
+our $n_ts      = qr/(\d{1,5})([shmd]?)/; # Limit \d{1,5} because \d{6} looks
+
+sub micro_t {
+   my ( $t, %args ) = @_;
+   my $p_ms = defined $args{p_ms} ? $args{p_ms} : 0;  # precision for ms vals
+   my $p_s  = defined $args{p_s}  ? $args{p_s}  : 0;  # precision for s vals
+   my $f;
+
+   $t = 0 if $t < 0;
+
+   $t = sprintf('%.17f', $t) if $t =~ /e/;
+
+   $t =~ s/\.(\d{1,6})\d*/\.$1/;
+
+   if ($t > 0 && $t <= 0.000999) {
+      $f = ($t * 1000000) . 'us';
+   }
+   elsif ($t >= 0.001000 && $t <= 0.999999) {
+      $f = sprintf("%.${p_ms}f", $t * 1000);
+      $f = ($f * 1) . 'ms'; # * 1 to remove insignificant zeros
+   }
+   elsif ($t >= 1) {
+      $f = sprintf("%.${p_s}f", $t);
+      $f = ($f * 1) . 's'; # * 1 to remove insignificant zeros
+   }
+   else {
+      $f = 0;  # $t should = 0 at this point
+   }
+
+   return $f;
+}
+
+sub percentage_of {
+   my ( $is, $of, %args ) = @_;
+   my $p   = $args{p} || 0; # float precision
+   my $fmt = $p ? "%.${p}f" : "%d";
+   return sprintf $fmt, ($is * 100) / ($of ||= 1);
+}
+
+sub secs_to_time {
+   my ( $secs, $fmt ) = @_;
+   $secs ||= 0;
+   return '00:00' unless $secs;
+
+   $fmt ||= $secs >= 86_400 ? 'd'
+          : $secs >= 3_600  ? 'h'
+          :                   'm';
+
+   return
+      $fmt eq 'd' ? sprintf(
+         "%d+%02d:%02d:%02d",
+         int($secs / 86_400),
+         int(($secs % 86_400) / 3_600),
+         int(($secs % 3_600) / 60),
+         $secs % 60)
+      : $fmt eq 'h' ? sprintf(
+         "%02d:%02d:%02d",
+         int(($secs % 86_400) / 3_600),
+         int(($secs % 3_600) / 60),
+         $secs % 60)
+      : sprintf(
+         "%02d:%02d",
+         int(($secs % 3_600) / 60),
+         $secs % 60);
+}
+
+sub time_to_secs {
+   my ( $val, $default_suffix ) = @_;
+   die "I need a val argument" unless defined $val;
+   my $t = 0;
+   my ( $prefix, $num, $suffix ) = $val =~ m/([+-]?)(\d+)([a-z])?$/;
+   $suffix = $suffix || $default_suffix || 's';
+   if ( $suffix =~ m/[smhd]/ ) {
+      $t = $suffix eq 's' ? $num * 1        # Seconds
+         : $suffix eq 'm' ? $num * 60       # Minutes
+         : $suffix eq 'h' ? $num * 3600     # Hours
+         :                  $num * 86400;   # Days
+
+      $t *= -1 if $prefix && $prefix eq '-';
+   }
+   else {
+      die "Invalid suffix for $val: $suffix";
+   }
+   return $t;
+}
+
+sub shorten {
+   my ( $num, %args ) = @_;
+   my $p = defined $args{p} ? $args{p} : 2;     # float precision
+   my $d = defined $args{d} ? $args{d} : 1_024; # divisor
+   my $n = 0;
+   my @units = ('', qw(k M G T P E Z Y));
+   while ( $num >= $d && $n < @units - 1 ) {
+      $num /= $d;
+      ++$n;
+   }
+   return sprintf(
+      $num =~ m/\./ || $n
+         ? "%.${p}f%s"
+         : '%d',
+      $num, $units[$n]);
+}
+
+sub ts {
+   my ( $time, $gmt ) = @_;
+   my ( $sec, $min, $hour, $mday, $mon, $year )
+      = $gmt ? gmtime($time) : localtime($time);
+   $mon  += 1;
+   $year += 1900;
+   my $val = sprintf("%d-%02d-%02dT%02d:%02d:%02d",
+      $year, $mon, $mday, $hour, $min, $sec);
+   if ( my ($us) = $time =~ m/(\.\d+)$/ ) {
+      $us = sprintf("%.6f", $us);
+      $us =~ s/^0\././;
+      $val .= $us;
+   }
+   return $val;
+}
+
+sub parse_timestamp {
+   my ( $val ) = @_;
+   if ( my($y, $m, $d, $h, $i, $s, $f)
+         = $val =~ m/^$mysql_ts$/ )
+   {
+      return sprintf "%d-%02d-%02d %02d:%02d:"
+                     . (defined $f ? '%09.6f' : '%02d'),
+                     $y + 2000, $m, $d, $h, $i, (defined $f ? $s + $f : $s);
+   }
+   return $val;
+}
+
+sub unix_timestamp {
+   my ( $val, $gmt ) = @_;
+   if ( my($y, $m, $d, $h, $i, $s, $us) = $val =~ m/^$proper_ts$/ ) {
+      $val = $gmt
+         ? timegm($s, $i, $h, $d, $m - 1, $y)
+         : timelocal($s, $i, $h, $d, $m - 1, $y);
+      if ( defined $us ) {
+         $us = sprintf('%.6f', $us);
+         $us =~ s/^0\././;
+         $val .= $us;
+      }
+   }
+   return $val;
+}
+
+sub any_unix_timestamp {
+   my ( $val, $callback ) = @_;
+
+   if ( my ($n, $suffix) = $val =~ m/^$n_ts$/ ) {
+      $n = $suffix eq 's' ? $n            # Seconds
+         : $suffix eq 'm' ? $n * 60       # Minutes
+         : $suffix eq 'h' ? $n * 3600     # Hours
+         : $suffix eq 'd' ? $n * 86400    # Days
+         :                  $n;           # default: Seconds
+      MKDEBUG && _d('ts is now - N[shmd]:', $n);
+      return time - $n;
+   }
+   elsif ( $val =~ m/^\d{9,}/ ) {
+      MKDEBUG && _d('ts is already a unix timestamp');
+      return $val;
+   }
+   elsif ( my ($ymd, $hms) = $val =~ m/^(\d{6})(?:\s+(\d+:\d+:\d+))?/ ) {
+      MKDEBUG && _d('ts is MySQL slow log timestamp');
+      $val .= ' 00:00:00' unless $hms;
+      return unix_timestamp(parse_timestamp($val));
+   }
+   elsif ( ($ymd, $hms) = $val =~ m/^(\d{4}-\d\d-\d\d)(?:[T ](\d+:\d+:\d+))?/) {
+      MKDEBUG && _d('ts is properly formatted timestamp');
+      $val .= ' 00:00:00' unless $hms;
+      return unix_timestamp($val);
+   }
+   else {
+      MKDEBUG && _d('ts is MySQL expression');
+      return $callback->($val) if $callback && ref $callback eq 'CODE';
+   }
+
+   MKDEBUG && _d('Unknown ts type:', $val);
+   return;
+}
+
+sub make_checksum {
+   my ( $val ) = @_;
+   my $checksum = uc substr(md5_hex($val), -16);
+   MKDEBUG && _d($checksum, 'checksum for', $val);
+   return $checksum;
+}
+
+sub crc32 {
+   my ( $string ) = @_;
+   return unless $string;
+   my $poly = 0xEDB88320;
+   my $crc  = 0xFFFFFFFF;
+   foreach my $char ( split(//, $string) ) {
+      my $comp = ($crc ^ ord($char)) & 0xFF;
+      for ( 1 .. 8 ) {
+         $comp = $comp & 1 ? $poly ^ ($comp >> 1) : $comp >> 1;
+      }
+      $crc = (($crc >> 8) & 0x00FFFFFF) ^ $comp;
+   }
+   return $crc ^ 0xFFFFFFFF;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Transformers package
+# ###########################################################################
+
+# ###########################################################################
 # QueryRewriter package 7300
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
@@ -1775,199 +2224,6 @@ sub _d {
 
 # ###########################################################################
 # End QueryRewriter package
-# ###########################################################################
-
-# ###########################################################################
-# SlowLogParser package 7096
-# This package is a copy without comments from the original.  The original
-# with comments and its test file can be found in the SVN repository at,
-#   trunk/common/SlowLogParser.pm
-#   trunk/common/t/SlowLogParser.t
-# See http://code.google.com/p/maatkit/wiki/Developers for more information.
-# ###########################################################################
-package SlowLogParser;
-
-use strict;
-use warnings FATAL => 'all';
-use English qw(-no_match_vars);
-use Data::Dumper;
-
-use constant MKDEBUG => $ENV{MKDEBUG} || 0;
-
-sub new {
-   my ( $class ) = @_;
-   my $self = {
-      pending => [],
-   };
-   return bless $self, $class;
-}
-
-my $slow_log_ts_line = qr/^# Time: ([0-9: ]{15})/;
-my $slow_log_uh_line = qr/# User\@Host: ([^\[]+|\[[^[]+\]).*?@ (\S*) \[(.*)\]/;
-my $slow_log_hd_line = qr{
-      ^(?:
-      T[cC][pP]\s[pP]ort:\s+\d+ # case differs on windows/unix
-      |
-      [/A-Z].*mysqld,\sVersion.*(?:started\swith:|embedded\slibrary)
-      |
-      Time\s+Id\s+Command
-      ).*\n
-   }xm;
-
-sub parse_event {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(next_event tell);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($next_event, $tell) = @args{@required_args};
-
-   my $pending = $self->{pending};
-   local $INPUT_RECORD_SEPARATOR = ";\n#";
-   my $trimlen    = length($INPUT_RECORD_SEPARATOR);
-   my $pos_in_log = $tell->();
-   my $stmt;
-
-   EVENT:
-   while (
-         defined($stmt = shift @$pending)
-      or defined($stmt = $next_event->())
-   ) {
-      my @properties = ('cmd', 'Query', 'pos_in_log', $pos_in_log);
-      $pos_in_log = $tell->();
-
-      if ( $stmt =~ s/$slow_log_hd_line//go ){ # Throw away header lines in log
-         my @chunks = split(/$INPUT_RECORD_SEPARATOR/o, $stmt);
-         if ( @chunks > 1 ) {
-            MKDEBUG && _d("Found multiple chunks");
-            $stmt = shift @chunks;
-            unshift @$pending, @chunks;
-         }
-      }
-
-      $stmt = '#' . $stmt unless $stmt =~ m/\A#/;
-      $stmt =~ s/;\n#?\Z//;
-
-
-      my ($got_ts, $got_uh, $got_ac, $got_db, $got_set, $got_embed);
-      my $pos = 0;
-      my $len = length($stmt);
-      my $found_arg = 0;
-      LINE:
-      while ( $stmt =~ m/^(.*)$/mg ) { # /g is important, requires scalar match.
-         $pos     = pos($stmt);  # Be careful not to mess this up!
-         my $line = $1;          # Necessary for /g and pos() to work.
-         MKDEBUG && _d($line);
-
-         if ($line =~ m/^(?:#|use |SET (?:last_insert_id|insert_id|timestamp))/o) {
-
-            if ( !$got_ts && (my ( $time ) = $line =~ m/$slow_log_ts_line/o)) {
-               MKDEBUG && _d("Got ts", $time);
-               push @properties, 'ts', $time;
-               ++$got_ts;
-               if ( !$got_uh
-                  && ( my ( $user, $host, $ip ) = $line =~ m/$slow_log_uh_line/o )
-               ) {
-                  MKDEBUG && _d("Got user, host, ip", $user, $host, $ip);
-                  push @properties, 'user', $user, 'host', $host, 'ip', $ip;
-                  ++$got_uh;
-               }
-            }
-
-            elsif ( !$got_uh
-                  && ( my ( $user, $host, $ip ) = $line =~ m/$slow_log_uh_line/o )
-            ) {
-               MKDEBUG && _d("Got user, host, ip", $user, $host, $ip);
-               push @properties, 'user', $user, 'host', $host, 'ip', $ip;
-               ++$got_uh;
-            }
-
-            elsif (!$got_ac && $line =~ m/^# (?:administrator command:.*)$/) {
-               MKDEBUG && _d("Got admin command");
-               $line =~ s/^#\s+//;  # string leading "# ".
-               push @properties, 'cmd', 'Admin', 'arg', $line;
-               push @properties, 'bytes', length($properties[-1]);
-               ++$found_arg;
-               ++$got_ac;
-            }
-
-            elsif ( $line =~ m/^# +[A-Z][A-Za-z_]+: \S+/ ) { # Make the test cheap!
-               MKDEBUG && _d("Got some line with properties");
-
-               if ( $line =~ m/Schema:\s+\w+: / ) {
-                  MKDEBUG && _d('Removing empty Schema attrib');
-                  $line =~ s/Schema:\s+//;
-                  MKDEBUG && _d($line);
-               }
-
-               my @temp = $line =~ m/(\w+):\s+(\S+|\Z)/g;
-               push @properties, @temp;
-            }
-
-            elsif ( !$got_db && (my ( $db ) = $line =~ m/^use ([^;]+)/ ) ) {
-               MKDEBUG && _d("Got a default database:", $db);
-               push @properties, 'db', $db;
-               ++$got_db;
-            }
-
-            elsif (!$got_set && (my ($setting) = $line =~ m/^SET\s+([^;]*)/)) {
-               MKDEBUG && _d("Got some setting:", $setting);
-               push @properties, split(/,|\s*=\s*/, $setting);
-               ++$got_set;
-            }
-
-            if ( !$found_arg && $pos == $len ) {
-               MKDEBUG && _d("Did not find arg, looking for special cases");
-               local $INPUT_RECORD_SEPARATOR = ";\n";
-               if ( defined(my $l = $next_event->()) ) {
-                  chomp $l;
-                  $l =~ s/^\s+//;
-                  MKDEBUG && _d("Found admin statement", $l);
-                  push @properties, 'cmd', 'Admin', 'arg', $l;
-                  push @properties, 'bytes', length($properties[-1]);
-                  $found_arg++;
-               }
-               else {
-                  MKDEBUG && _d("I can't figure out what to do with this line");
-                  next EVENT;
-               }
-            }
-         }
-         else {
-            MKDEBUG && _d("Got the query/arg line");
-            my $arg = substr($stmt, $pos - length($line));
-            push @properties, 'arg', $arg, 'bytes', length($arg);
-            if ( $args{misc} && $args{misc}->{embed}
-               && ( my ($e) = $arg =~ m/($args{misc}->{embed})/)
-            ) {
-               push @properties, $e =~ m/$args{misc}->{capture}/g;
-            }
-            last LINE;
-         }
-      }
-
-      MKDEBUG && _d('Properties of event:', Dumper(\@properties));
-      my $event = { @properties };
-      return $event;
-   } # EVENT
-
-   @$pending = ();
-   $args{oktorun}->(0) if $args{oktorun};
-   return;
-}
-
-sub _d {
-   my ($package, undef, $line) = caller 0;
-   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
-        map { defined $_ ? $_ : 'undef' }
-        @_;
-   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
-}
-
-1;
-
-# ###########################################################################
-# End SlowLogParser package
 # ###########################################################################
 
 # ###########################################################################
@@ -4638,6 +4894,8 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 use sigtrap 'handler', \&sig_int, 'normal-signals';
 
+Transformers->import(qw(make_checksum));
+
 # Global variables.  Only really essential variables should be here.
 my $oktorun = 1;
 
@@ -4673,11 +4931,14 @@ sub main {
    # Make common modules.
    # ########################################################################
    my $qp = new QueryParser();
+   my $qr = new QueryRewriter(QueryParser => $qp);
    my $sp = new SQLParser();
    my $tu = new TableUsage(QueryParser => $qp, SQLParser => $sp);
    my %common_modules = (
-      OptionParser => $o,
-      DSNParser    => $dp,
+      OptionParser  => $o,
+      DSNParser     => $dp,
+      QueryParser   => $qp,
+      QueryRewriter => $qr,
    );
 
    # ########################################################################
@@ -4886,6 +5147,8 @@ sub main {
    } # filter
 
    if ( $explain_ext_dbh ) { # explain extended
+      my $default_db = $o->get('database');
+
       $pipeline->add(
          name    => 'explain extended',
          process => sub {
@@ -4897,6 +5160,7 @@ sub main {
                $qualified_query = qualify_query(
                   query => $query,
                   dbh   => $explain_ext_dbh,
+                  db    => $args->{event}->{db} || $default_db,
                );
             };
             if ( $EVAL_ERROR ) {
@@ -4919,18 +5183,25 @@ sub main {
          name    => 'table usage',
          process => sub {
             my ( $args ) = @_;
-
             my $event = $args->{event};
-            if ( $id_attrib
-                 && (!exists $event->{$id_attrib}
-                   || !defined $event->{$id_attrib}) ) {
-               MKDEBUG && _d("Event", $id_attrib, "attrib doesn't exist",
-                  "or isn't defined, skipping");
-               return;
-            }
-
             my $query = $event->{arg};
             return unless $query;
+
+            my $query_id;
+            if ( $id_attrib ) {
+               if (   !exists $event->{$id_attrib}
+                   || !defined $event->{$id_attrib}) {
+                  MKDEBUG && _d("Event", $id_attrib, "attrib doesn't exist",
+                     "or isn't defined, skipping");
+                  return;
+               }
+               $query_id = $event->{$id_attrib};
+            }
+            else {
+               $query_id = "0x" . make_checksum(
+                  $qr->fingerprint($event->{original_arg} || $event->{arg}));
+            }
+
             my $table_usage = $tu->get_table_usage(
                query      => $query,
                default_db => $event->{db} || $default_db,
@@ -4945,7 +5216,7 @@ sub main {
 
             report_table_usage(
                table_usage => $table_usage,
-               query_id    => $id_attrib ? $event->{$id_attrib} : $queryno++,
+               query_id    => $query_id,
                %common_modules,
             ); 
 
@@ -5006,10 +5277,10 @@ sub report_table_usage {
    my ($table_usage, $query_id) = @args{@required_args};
    MKDEBUG && _d("Reporting table usage");
 
-   my $tableno = 1;
+   my $target_tbl_num = 1;
    TABLE:
    foreach my $table ( @$table_usage ) {
-      print "Query_id: $query_id.$tableno\n";
+      print "Query_id: $query_id." . ($target_tbl_num++) . "\n";
 
       USAGE:
       foreach my $usage ( @$table ) {
@@ -5031,8 +5302,15 @@ sub qualify_query {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($query, $dbh) = @args{@required_args};
+   my $sql;
 
-   my $sql = "EXPLAIN EXTENDED $query";
+   if ( my $db = $args{db} ) {
+      $sql = "USE $db";
+      MKDEBUG && _d($dbh, $sql);
+      $dbh->do($sql);
+   }
+
+   $sql = "EXPLAIN EXTENDED $query";
    MKDEBUG && _d($dbh, $sql);
    $dbh->do($sql);  # don't need the result
 
@@ -5103,25 +5381,203 @@ if ( !caller ) { exit main(@ARGV); }
 
 =head1 NAME
 
-mk-table-usage - Parse slow query logs and print tables accessed by queries.
+mk-table-usage - Read queries from a log and analyze how they use tables.
 
 =head1 SYNOPSIS
 
-Usage: mk-table-usage [OPTION...] [FILE]
+Usage: mk-table-usage [OPTION...] [FILE...]
 
-mk-table-usage parses slow query logs and print tables accessed by queries.
+mk-table-usage reads queries from slow query logs and analyzes how they use
+tables.  If no FILE is specified, STDIN is read.  Table usage for every query
+is printed to STDOUT.
 
 =head1 RISKS
 
-mk-table-usage only reads information.
+mk-table-use is very log risk because it only reads and examines queries from
+a log and executes C<EXPLAIN EXTENDED> if the L<"--explain-extended"> option
+is specified.
 
-At the time of this release, there are no known, critical bugs.
+At the time of this release, there are no known bugs that could cause serious
+harm to users.
 
-See also L<"BUGS">.
+The authoritative source for updated information is always the online issue
+tracking system.  Issues that affect this tool will be marked as such.  You can
+see a list of such issues at the following URL:
+L<http://www.maatkit.org/bugs/mk-table-usage>.
+
+See also L<"BUGS"> for more information on filing bugs and getting help.
 
 =head1 DESCRIPTION
 
-TODO
+mk-table-usage reads queries from slow query logs and analyzes how they use
+tables.  Table usage indicates more than just which tables are read from or
+written to by the query, it also indicates data flow: data in and data out.
+Data flow is determined by the contexts in which tables are used by the query.
+A single table can be used in several different contexts in the same query.
+The reported table usage for each query lists every context for every table.
+This CONTEXT-TABLE list tells how and where data flows, i.e. the query's table
+usage.  The L<"OUTPUT"> section lists the possible contexts and describes how
+to read a table usage report.
+
+Since this tool analyzes table usage, it's important that queries use
+table-qualified columns.  If a query uses only one table, then all columns
+must be from that table and there's no problem.  But if a query uses
+multiple tables and the columns are not table-qualified, then that creates a
+problem that can only be solved by knowing the query's database and specifying
+L<"--explain-extended">.  If the slow log does not specify the database
+used by the query, then you can specify a default database with L<"--database">.
+Else, there is no way to know or guess the database, so the query will be
+skipped.  Secondly, if the database is known, then specifying
+L<"--explain-extended"> causes mk-table-uses do C<EXPLAIN EXTENDED ...>
+C<SHOW WARNINGS> to get the fully qualified query as reported by MySQL
+(i.e. all identifiers are fully database- and/or table-qualified).  For
+best results, you should specify L<"--explain-extended"> and
+L<"--database"> if you know that all queries use the same database.
+
+Each query is identified in the output by either an MD5 hex checksum
+of the query's fingerprint or the query's value for the specified
+L<"--id-attribute">.  The query ID is for parsing and storing the table
+usage reports in a table that is keyed on the query ID.  See L<"OUTPUT">
+for more information.
+
+=head1 OUTPUT
+
+A table usage report is printed for each query that looks like:
+
+  Query_id: 0x1CD27577D202A339.1
+  UPDATE t1
+  SELECT DUAL
+  JOIN t1
+  JOIN t2
+  WHERE t1
+
+  Query_id: 0x1CD27577D202A339.2
+  UPDATE t2
+  SELECT DUAL
+  JOIN t1
+  JOIN t2
+  WHERE t1
+
+Usage reports are separted by blank lines.  The first line is always the
+query ID: a unique ID that can be used to parse the output and store the
+usage reports in a table keyed on this ID.  The query ID has two parts
+separated by a period: the query ID and the target table number.
+
+If L<"--id-attribute"> is not specified, then query IDs are automatically
+created by making an MD5 hex checksum of the query's fingerprint
+(as shown above, e.g. C<0x1CD27577D202A339>); else, the query ID is the query's
+value for the given attribute.
+
+The target table number starts at 1 and increments by 1 for each table that
+the query ID affects.  Only multi-table UPDATE queries can affect
+multiple tables with a single query, so this number is 1 for all other types
+of queries.  (Multi-table DELETE queries are not supported.)
+The example output above is from this query:
+
+  UPDATE t1 AS a JOIN t2 AS b USING (id)
+  SET a.foo="bar", b.foo="bat"
+  WHERE a.id=1;
+
+The C<SET> clause indicates that two tables are updated: C<a> or C<t1> and
+C<b> or C<t2>.  So two usage reports are printed, one for each table, and
+this is indicated in the output by their common query ID but incrementing
+target table number.
+
+After the first line is a variable number of CONTEXT-TABLE lines.  Possible
+contexts are:
+
+=over
+
+=item * SELECT
+
+SELECT means that data is taken out of the table for one of two reasons:
+to be returned to the user as part of a result set, or to be put into another
+table as part of an INSERT or UPDATE.  In the first case, since only SELECT
+queries return result sets, a SELECT context is always listed for SELECT
+queries.  In the second case, data from one table is used to insert or
+update rows in another table.  For example, the UPDATE query in the example
+above has the usage:
+
+  SELECT DUAL
+
+This refers to:
+
+  SET a.foo="bar", b.foo="bat"
+
+DUAL is used for any values not from tables, in this case "bar" and "bat".
+If that C<SET> clause where C<SET a.foo=b.foo> instead, then the complete
+usage would be:
+
+  Query_id: 0x1CD27577D202A339.1
+  UPDATE t1
+  SELECT t2
+  JOIN t1
+  JOIN t2
+  WHERE t1
+
+The presence of a SELECT context after another context like UPDATE or
+INSERT indicates where the UPDATE or INSERT is reading data.  The example
+immediately above reflects an UPDATE query that updates rows in table C<t1>
+with data from table C<t2>.
+
+=item * Any other query type
+
+Any other query type like INSERT, UPDATE, DELETE, etc. may be a context.
+All these types indicate that the table is written or altered in some way.
+If a SELECT context follows one of these types, then data is read from the
+SELECT table and written to this table.  This happens, for example, with
+INSERT..SELECT or UPDATE queries that set column values using values from
+tables instead of constant values.
+
+These query types are not supported
+
+  SET
+  LOAD
+  multi-table DELETE
+
+=item * JOIN
+
+The JOIN context lists tables that are joined either with an explicit JOIN
+in the FROM clause or implicitly in the WHERE clause like C<t1.id = t2.id>.
+
+=item * WHERE
+
+The WHERE context lists tables that are used in the WHERE clause to filter
+results.  This does not include tables that are implicitly joined in the
+WHERE clause; those are listed a JOIN (see JOIN context above).  For example:
+
+  WHERE t1.id > 100 AND t1.id < 200 AND t2.foo IS NOT NULL
+
+Results in:
+
+  WHERE t1
+  WHERE t2
+
+Only unique tables are listed; that is why table C<t1> is only listed once.
+
+=item * TLIST
+
+The TLIST context lists tables that are accessed by the query but do not
+appear in any other context.  These tables are usually an implicit
+full cartesian join, so they should be avoided.  For example, the query
+C<SELECT * FROM t1, t2> results in:
+
+  Query_id: 0xBDDEB6EDA41897A8.1
+  SELECT t1
+  SELECT t2
+  TLIST t1
+  TLIST t2
+
+First of all, there are two SELECT contexts because C<SELECT *> selects
+rows from all tables, C<t1> and C<t2> in this case.  Secondly, the tables
+are implicitly joined but without any kind of join condition which results
+in a full cartesian join as indicated by the TLIST context for each.
+
+=back
+
+=head1 EXIT STATUS
+
+mk-table-usage exits 1 on any kind of error, else 0 if no errors.
 
 =head1 OPTIONS
 
@@ -5267,7 +5723,7 @@ check both.
 =back
 
 Since L<"--filter"> allows you to alter C<$event>, you can use it to do other
-things, like create new attributes.  See L<"ATTRIBUTES"> for an example.
+things, like create new attributes.
 
 
 =item --help
@@ -5330,11 +5786,9 @@ type: time; default: 0
 
 Wait this long for an event from the input; 0 to wait forever.
 
-This option sets the maximum time to wait for an event from the input.  It
-applies to all types of input except L<"--processlist">.  If an
+This option sets the maximum time to wait for an event from the input.  If an
 event is not received after the specified time, the script stops reading the
-input and prints its reports.  If L<"--iterations"> is 0 or greater than
-1, the next iteration will begin, else the script will exit.
+input and prints its reports.
 
 This option requires the Perl POSIX module.
 

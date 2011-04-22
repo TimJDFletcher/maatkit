@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 3;
+use Test::More tests => 4;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -41,6 +41,18 @@ ok(
    'Analysis for slow002.txt (issue 1237)'
 );
 
+
+# ############################################################################
+# --id-attribute
+# ############################################################################
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, "$in/slow003.txt",
+         qw(--id-attribute ts)) },
+      "$out/slow003-003.txt",
+   ),
+   'Analysis for slow003.txt with --id-attribute'
+);
 
 # ############################################################################
 # Queries with tables that can't be resolved.
