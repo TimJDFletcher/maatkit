@@ -181,6 +181,11 @@ sub _get_tables_used_from_query_struct {
                   : die "Cannot find table references for $query_type queries";
    my $tables     = $query_struct->{$tbl_refs};
 
+   if ( !$tables || @$tables == 0 ) {
+      MKDEBUG && _d("Query does not use any tables");
+      return [ [ { context => $query_type, table => 'DUAL' } ] ];
+   }
+
    # Get tables used in the query's WHERE clause, if it has one.
    my $where;
    if ( $query_struct->{where} ) {
@@ -488,9 +493,18 @@ sub _get_tables_used_in_where {
    foreach my $cond ( @$where ) {
       MKDEBUG && _d("Condition:", Dumper($cond));
       my @tables;  # tables used in this condition
+      my $n_vals      = 0;
+      my $is_constant = 0;
       ARG:
       foreach my $arg ( qw(left_arg right_arg) ) {
+         if ( !defined $cond->{$arg} ) {
+            MKDEBUG && _d($arg, "is a constant value");
+            $is_constant = 1;
+            next ARG;
+         }
+
          if ( $sql_parser->is_identifier($cond->{$arg}) ) {
+            MKDEBUG && _d($arg, "is an identifier");
             my $ident_struct = $sql_parser->parse_identifier(
                'column',
                $cond->{$arg}
@@ -523,20 +537,27 @@ sub _get_tables_used_in_where {
                push @tables, $table;
             }
          }
+         else {
+            MKDEBUG && _d($arg, "is a value");
+            $n_vals++;
+         }
       }  # ARG
 
-      if ( @tables == 0 ) {
-         MKDEBUG && _d("Condition is an expression");
+      if ( $is_constant || $n_vals == 2 ) {
+         MKDEBUG && _d("Condition is a constant or two values");
          $filter_tables{'DUAL'} = undef;
       }
-      elsif ( @tables == 1 ) {
-         MKDEBUG && _d("Condition filters table", $tables[0]);
-         $filter_tables{$tables[0]} = undef;
-      }
       else {
-         MKDEBUG && _d("Condition joins tables", $tables[0], "and", $tables[1]);
-         $join_tables{$tables[0]} = undef;
-         $join_tables{$tables[1]} = undef;
+         if ( @tables == 1 ) {
+            MKDEBUG && _d("Condition filters table", $tables[0]);
+            $filter_tables{$tables[0]} = undef;
+         }
+         elsif ( @tables == 2 ) {
+            MKDEBUG && _d("Condition joins tables",
+               $tables[0], "and", $tables[1]);
+            $join_tables{$tables[0]} = undef;
+            $join_tables{$tables[1]} = undef;
+         }
       }
    }  # CONDITION
 

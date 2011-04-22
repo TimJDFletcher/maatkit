@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 17;
+use Test::More tests => 21;
 
 use MaatkitTest;
 use QueryParser;
@@ -370,6 +370,69 @@ test_get_table_usage(
       ],
    ],
    "INSERT SELECT with TLIST table"
+);
+
+test_get_table_usage(
+   "select country.country, city.city from city join country using (country_id) where country = 'Brazil' and city like 'A%' limit 1",
+   [
+      [
+         { context => 'SELECT',
+           table   => 'country',
+         },
+         { context => 'SELECT',
+           table   => 'city',
+         },
+         { context => 'JOIN',
+           table   => 'city',
+         },
+         { context => 'JOIN',
+           table   => 'country',
+         },
+      ],
+   ],
+   "Unresolvable tables in WHERE"
+);
+
+test_get_table_usage(
+   "select c from t where 1",
+   [
+      [
+         { context => 'SELECT',
+           table   => 't',
+         },
+         { context => 'WHERE',
+           table   => 'DUAL',
+         },
+      ],
+   ],
+   "WHERE <constant>"
+);
+
+test_get_table_usage(
+   "select c from t where 1=1",
+   [
+      [
+         { context => 'SELECT',
+           table   => 't',
+         },
+         { context => 'WHERE',
+           table   => 'DUAL',
+         },
+      ],
+   ],
+   "WHERE <constant>=<constant>"
+);
+
+test_get_table_usage(
+   "select now()",
+   [
+      [
+         { context => 'SELECT',
+           table   => 'DUAL',
+         },
+      ],
+   ],
+   "SELECT NOW()"
 );
 
 # ############################################################################
