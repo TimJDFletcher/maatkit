@@ -1,16 +1,31 @@
-# Query_id: 1
-r t
-# Query_id: 2
-r t1
-r t2
-r t3
-r z
-# Query_id: 3
-w t
-# Query_id: 4
-w t
-# Query_id: 5
-r a
-r b
-# Query_id: 6
-w t
+Query_id: 1.1
+SELECT t
+
+Query_id: 2.1
+SELECT t1
+SELECT t2
+SELECT t3
+SELECT z
+TLIST t1
+TLIST t2
+TLIST t3
+TLIST z
+
+Query_id: 3.1
+INSERT t
+SELECT DUAL
+
+Query_id: 4.1
+DELETE t
+WHERE t
+
+Query_id: 5.1
+SELECT a
+SELECT b
+JOIN a
+JOIN b
+
+Query_id: 6.1
+REPLACE t
+SELECT DUAL
+

@@ -1,16 +1,40 @@
-# Query_id: 1
-w t1
-r t2
-# Query_id: 2
-w t1
-w t2
-# Query_id: 3
-w t1
-r t2
-# Query_id: 4
-w t1
-r t2
-# Query_id: 5
-w t
-r a
-r b
+Query_id: 1.1
+UPDATE t1
+SELECT DUAL
+JOIN t1
+JOIN t2
+WHERE t2
+
+Query_id: 2.1
+UPDATE t1
+SELECT DUAL
+JOIN t1
+JOIN t2
+WHERE t1
+
+Query_id: 2.1
+UPDATE t2
+SELECT DUAL
+JOIN t1
+JOIN t2
+WHERE t1
+
+Query_id: 3.1
+UPDATE t1
+SELECT DUAL
+JOIN t1
+JOIN t2
+WHERE t2
+
+Query_id: 4.1
+INSERT t1
+SELECT t2
+WHERE t2
+
+Query_id: 5.1
+INSERT t
+SELECT a
+SELECT b
+JOIN a
+JOIN b
+

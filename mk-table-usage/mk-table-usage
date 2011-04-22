@@ -25,81 +25,360 @@ our $DISTRIB = '@DISTRIB@';
 our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
-# Quoter package 6850
+# DSNParser package 7388
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
-#   trunk/common/Quoter.pm
-#   trunk/common/t/Quoter.t
+#   trunk/common/DSNParser.pm
+#   trunk/common/t/DSNParser.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
 
-package Quoter;
+package DSNParser;
 
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 0;
+$Data::Dumper::Quotekeys = 0;
+
+eval {
+   require DBI;
+};
+my $have_dbi = $EVAL_ERROR ? 0 : 1;
+
 
 sub new {
    my ( $class, %args ) = @_;
-   return bless {}, $class;
-}
-
-sub quote {
-   my ( $self, @vals ) = @_;
-   foreach my $val ( @vals ) {
-      $val =~ s/`/``/g;
+   foreach my $arg ( qw(opts) ) {
+      die "I need a $arg argument" unless $args{$arg};
    }
-   return join('.', map { '`' . $_ . '`' } @vals);
-}
-
-sub quote_val {
-   my ( $self, $val ) = @_;
-
-   return 'NULL' unless defined $val;          # undef = NULL
-   return "''" if $val eq '';                  # blank string = ''
-   return $val if $val =~ m/^0x[0-9a-fA-F]+$/;  # hex data
-
-   $val =~ s/(['\\])/\\$1/g;
-   return "'$val'";
-}
-
-sub split_unquote {
-   my ( $self, $db_tbl, $default_db ) = @_;
-   $db_tbl =~ s/`//g;
-   my ( $db, $tbl ) = split(/[.]/, $db_tbl);
-   if ( !$tbl ) {
-      $tbl = $db;
-      $db  = $default_db;
+   my $self = {
+      opts => {}  # h, P, u, etc.  Should come from DSN OPTIONS section in POD.
+   };
+   foreach my $opt ( @{$args{opts}} ) {
+      if ( !$opt->{key} || !$opt->{desc} ) {
+         die "Invalid DSN option: ", Dumper($opt);
+      }
+      MKDEBUG && _d('DSN option:',
+         join(', ',
+            map { "$_=" . (defined $opt->{$_} ? ($opt->{$_} || '') : 'undef') }
+               keys %$opt
+         )
+      );
+      $self->{opts}->{$opt->{key}} = {
+         dsn  => $opt->{dsn},
+         desc => $opt->{desc},
+         copy => $opt->{copy} || 0,
+      };
    }
-   return ($db, $tbl);
+   return bless $self, $class;
 }
 
-sub literal_like {
-   my ( $self, $like ) = @_;
-   return unless $like;
-   $like =~ s/([%_])/\\$1/g;
-   return "'$like'";
-}
-
-sub join_quote {
-   my ( $self, $default_db, $db_tbl ) = @_;
-   return unless $db_tbl;
-   my ($db, $tbl) = split(/[.]/, $db_tbl);
-   if ( !$tbl ) {
-      $tbl = $db;
-      $db  = $default_db;
+sub prop {
+   my ( $self, $prop, $value ) = @_;
+   if ( @_ > 2 ) {
+      MKDEBUG && _d('Setting', $prop, 'property');
+      $self->{$prop} = $value;
    }
-   $db  = "`$db`"  if $db  && $db  !~ m/^`/;
-   $tbl = "`$tbl`" if $tbl && $tbl !~ m/^`/;
-   return $db ? "$db.$tbl" : $tbl;
+   return $self->{$prop};
+}
+
+sub parse {
+   my ( $self, $dsn, $prev, $defaults ) = @_;
+   if ( !$dsn ) {
+      MKDEBUG && _d('No DSN to parse');
+      return;
+   }
+   MKDEBUG && _d('Parsing', $dsn);
+   $prev     ||= {};
+   $defaults ||= {};
+   my %given_props;
+   my %final_props;
+   my $opts = $self->{opts};
+
+   foreach my $dsn_part ( split(/,/, $dsn) ) {
+      if ( my ($prop_key, $prop_val) = $dsn_part =~  m/^(.)=(.*)$/ ) {
+         $given_props{$prop_key} = $prop_val;
+      }
+      else {
+         MKDEBUG && _d('Interpreting', $dsn_part, 'as h=', $dsn_part);
+         $given_props{h} = $dsn_part;
+      }
+   }
+
+   foreach my $key ( keys %$opts ) {
+      MKDEBUG && _d('Finding value for', $key);
+      $final_props{$key} = $given_props{$key};
+      if (   !defined $final_props{$key}
+           && defined $prev->{$key} && $opts->{$key}->{copy} )
+      {
+         $final_props{$key} = $prev->{$key};
+         MKDEBUG && _d('Copying value for', $key, 'from previous DSN');
+      }
+      if ( !defined $final_props{$key} ) {
+         $final_props{$key} = $defaults->{$key};
+         MKDEBUG && _d('Copying value for', $key, 'from defaults');
+      }
+   }
+
+   foreach my $key ( keys %given_props ) {
+      die "Unknown DSN option '$key' in '$dsn'.  For more details, "
+            . "please use the --help option, or try 'perldoc $PROGRAM_NAME' "
+            . "for complete documentation."
+         unless exists $opts->{$key};
+   }
+   if ( (my $required = $self->prop('required')) ) {
+      foreach my $key ( keys %$required ) {
+         die "Missing required DSN option '$key' in '$dsn'.  For more details, "
+               . "please use the --help option, or try 'perldoc $PROGRAM_NAME' "
+               . "for complete documentation."
+            unless $final_props{$key};
+      }
+   }
+
+   return \%final_props;
+}
+
+sub parse_options {
+   my ( $self, $o ) = @_;
+   die 'I need an OptionParser object' unless ref $o eq 'OptionParser';
+   my $dsn_string
+      = join(',',
+          map  { "$_=".$o->get($_); }
+          grep { $o->has($_) && $o->get($_) }
+          keys %{$self->{opts}}
+        );
+   MKDEBUG && _d('DSN string made from options:', $dsn_string);
+   return $self->parse($dsn_string);
+}
+
+sub as_string {
+   my ( $self, $dsn, $props ) = @_;
+   return $dsn unless ref $dsn;
+   my %allowed = $props ? map { $_=>1 } @$props : ();
+   return join(',',
+      map  { "$_=" . ($_ eq 'p' ? '...' : $dsn->{$_})  }
+      grep { defined $dsn->{$_} && $self->{opts}->{$_} }
+      grep { !$props || $allowed{$_}                   }
+      sort keys %$dsn );
+}
+
+sub usage {
+   my ( $self ) = @_;
+   my $usage
+      = "DSN syntax is key=value[,key=value...]  Allowable DSN keys:\n\n"
+      . "  KEY  COPY  MEANING\n"
+      . "  ===  ====  =============================================\n";
+   my %opts = %{$self->{opts}};
+   foreach my $key ( sort keys %opts ) {
+      $usage .= "  $key    "
+             .  ($opts{$key}->{copy} ? 'yes   ' : 'no    ')
+             .  ($opts{$key}->{desc} || '[No description]')
+             . "\n";
+   }
+   $usage .= "\n  If the DSN is a bareword, the word is treated as the 'h' key.\n";
+   return $usage;
+}
+
+sub get_cxn_params {
+   my ( $self, $info ) = @_;
+   my $dsn;
+   my %opts = %{$self->{opts}};
+   my $driver = $self->prop('dbidriver') || '';
+   if ( $driver eq 'Pg' ) {
+      $dsn = 'DBI:Pg:dbname=' . ( $info->{D} || '' ) . ';'
+         . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
+                     grep { defined $info->{$_} }
+                     qw(h P));
+   }
+   else {
+      $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
+         . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
+                     grep { defined $info->{$_} }
+                     qw(F h P S A))
+         . ';mysql_read_default_group=client';
+   }
+   MKDEBUG && _d($dsn);
+   return ($dsn, $info->{u}, $info->{p});
+}
+
+sub fill_in_dsn {
+   my ( $self, $dbh, $dsn ) = @_;
+   my $vars = $dbh->selectall_hashref('SHOW VARIABLES', 'Variable_name');
+   my ($user, $db) = $dbh->selectrow_array('SELECT USER(), DATABASE()');
+   $user =~ s/@.*//;
+   $dsn->{h} ||= $vars->{hostname}->{Value};
+   $dsn->{S} ||= $vars->{'socket'}->{Value};
+   $dsn->{P} ||= $vars->{port}->{Value};
+   $dsn->{u} ||= $user;
+   $dsn->{D} ||= $db;
+}
+
+sub get_dbh {
+   my ( $self, $cxn_string, $user, $pass, $opts ) = @_;
+   $opts ||= {};
+   my $defaults = {
+      AutoCommit         => 0,
+      RaiseError         => 1,
+      PrintError         => 0,
+      ShowErrorStatement => 1,
+      mysql_enable_utf8 => ($cxn_string =~ m/charset=utf8/i ? 1 : 0),
+   };
+   @{$defaults}{ keys %$opts } = values %$opts;
+
+   if ( $opts->{mysql_use_result} ) {
+      $defaults->{mysql_use_result} = 1;
+   }
+
+   if ( !$have_dbi ) {
+      die "Cannot connect to MySQL because the Perl DBI module is not "
+         . "installed or not found.  Run 'perl -MDBI' to see the directories "
+         . "that Perl searches for DBI.  If DBI is not installed, try:\n"
+         . "  Debian/Ubuntu  apt-get install libdbi-perl\n"
+         . "  RHEL/CentOS    yum install perl-DBI\n"
+         . "  OpenSolaris    pgk install pkg:/SUNWpmdbi\n";
+
+   }
+
+   my $dbh;
+   my $tries = 2;
+   while ( !$dbh && $tries-- ) {
+      MKDEBUG && _d($cxn_string, ' ', $user, ' ', $pass, ' {',
+         join(', ', map { "$_=>$defaults->{$_}" } keys %$defaults ), '}');
+
+      eval {
+         $dbh = DBI->connect($cxn_string, $user, $pass, $defaults);
+
+         if ( $cxn_string =~ m/mysql/i ) {
+            my $sql;
+
+            $sql = 'SELECT @@SQL_MODE';
+            MKDEBUG && _d($dbh, $sql);
+            my ($sql_mode) = $dbh->selectrow_array($sql);
+
+            $sql = 'SET @@SQL_QUOTE_SHOW_CREATE = 1'
+                 . '/*!40101, @@SQL_MODE=\'NO_AUTO_VALUE_ON_ZERO'
+                 . ($sql_mode ? ",$sql_mode" : '')
+                 . '\'*/';
+            MKDEBUG && _d($dbh, $sql);
+            $dbh->do($sql);
+
+            if ( my ($charset) = $cxn_string =~ m/charset=(\w+)/ ) {
+               $sql = "/*!40101 SET NAMES $charset*/";
+               MKDEBUG && _d($dbh, ':', $sql);
+               $dbh->do($sql);
+               MKDEBUG && _d('Enabling charset for STDOUT');
+               if ( $charset eq 'utf8' ) {
+                  binmode(STDOUT, ':utf8')
+                     or die "Can't binmode(STDOUT, ':utf8'): $OS_ERROR";
+               }
+               else {
+                  binmode(STDOUT) or die "Can't binmode(STDOUT): $OS_ERROR";
+               }
+            }
+
+            if ( $self->prop('set-vars') ) {
+               $sql = "SET " . $self->prop('set-vars');
+               MKDEBUG && _d($dbh, ':', $sql);
+               $dbh->do($sql);
+            }
+         }
+      };
+      if ( !$dbh && $EVAL_ERROR ) {
+         MKDEBUG && _d($EVAL_ERROR);
+         if ( $EVAL_ERROR =~ m/not a compiled character set|character set utf8/ ) {
+            MKDEBUG && _d('Going to try again without utf8 support');
+            delete $defaults->{mysql_enable_utf8};
+         }
+         elsif ( $EVAL_ERROR =~ m/locate DBD\/mysql/i ) {
+            die "Cannot connect to MySQL because the Perl DBD::mysql module is "
+               . "not installed or not found.  Run 'perl -MDBD::mysql' to see "
+               . "the directories that Perl searches for DBD::mysql.  If "
+               . "DBD::mysql is not installed, try:\n"
+               . "  Debian/Ubuntu  apt-get install libdbd-mysql-perl\n"
+               . "  RHEL/CentOS    yum install perl-DBD-MySQL\n"
+               . "  OpenSolaris    pgk install pkg:/SUNWapu13dbd-mysql\n";
+         }
+         if ( !$tries ) {
+            die $EVAL_ERROR;
+         }
+      }
+   }
+
+   MKDEBUG && _d('DBH info: ',
+      $dbh,
+      Dumper($dbh->selectrow_hashref(
+         'SELECT DATABASE(), CONNECTION_ID(), VERSION()/*!50038 , @@hostname*/')),
+      'Connection info:',      $dbh->{mysql_hostinfo},
+      'Character set info:',   Dumper($dbh->selectall_arrayref(
+                     'SHOW VARIABLES LIKE "character_set%"', { Slice => {}})),
+      '$DBD::mysql::VERSION:', $DBD::mysql::VERSION,
+      '$DBI::VERSION:',        $DBI::VERSION,
+   );
+
+   return $dbh;
+}
+
+sub get_hostname {
+   my ( $self, $dbh ) = @_;
+   if ( my ($host) = ($dbh->{mysql_hostinfo} || '') =~ m/^(\w+) via/ ) {
+      return $host;
+   }
+   my ( $hostname, $one ) = $dbh->selectrow_array(
+      'SELECT /*!50038 @@hostname, */ 1');
+   return $hostname;
+}
+
+sub disconnect {
+   my ( $self, $dbh ) = @_;
+   MKDEBUG && $self->print_active_handles($dbh);
+   $dbh->disconnect;
+}
+
+sub print_active_handles {
+   my ( $self, $thing, $level ) = @_;
+   $level ||= 0;
+   printf("# Active %sh: %s %s %s\n", ($thing->{Type} || 'undef'), "\t" x $level,
+      $thing, (($thing->{Type} || '') eq 'st' ? $thing->{Statement} || '' : ''))
+      or die "Cannot print: $OS_ERROR";
+   foreach my $handle ( grep {defined} @{ $thing->{ChildHandles} } ) {
+      $self->print_active_handles( $handle, $level + 1 );
+   }
+}
+
+sub copy {
+   my ( $self, $dsn_1, $dsn_2, %args ) = @_;
+   die 'I need a dsn_1 argument' unless $dsn_1;
+   die 'I need a dsn_2 argument' unless $dsn_2;
+   my %new_dsn = map {
+      my $key = $_;
+      my $val;
+      if ( $args{overwrite} ) {
+         $val = defined $dsn_1->{$key} ? $dsn_1->{$key} : $dsn_2->{$key};
+      }
+      else {
+         $val = defined $dsn_2->{$key} ? $dsn_2->{$key} : $dsn_1->{$key};
+      }
+      $key => $val;
+   } keys %{$self->{opts}};
+   return \%new_dsn;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
 }
 
 1;
 
 # ###########################################################################
-# End Quoter package
+# End DSNParser package
 # ###########################################################################
 
 # ###########################################################################
@@ -1124,7 +1403,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 6861
+# QueryRewriter package 7300
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -1319,9 +1598,14 @@ sub distill_verbs {
       my $last = '';
       grep { my $pass = $_ ne $last; $last = $_; $pass } map { uc } @verbs;
    };
-   my $verb_str = join(q{ }, @verbs);
-   $verb_str =~ s/( UNION SELECT)+/ UNION/g;
 
+   if ( ($verbs[0] || '') eq 'SELECT' && @verbs > 1 ) {
+      MKDEBUG && _d("False-positive verbs after SELECT:", @verbs[1..$#verbs]);
+      my $union = grep { $_ eq 'UNION' } @verbs;
+      @verbs    = $union ? qw(SELECT UNION) : qw(SELECT);
+   }
+
+   my $verb_str = join(q{ }, @verbs);
    return $verb_str;
 }
 
@@ -1687,13 +1971,14 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 6262
+# QueryParser package 7379
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
 #   trunk/common/t/QueryParser.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
+
 package QueryParser;
 
 use strict;
@@ -2174,7 +2459,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7242
+# SQLParser package 7427
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -2184,6 +2469,7 @@ sub _d {
 
 package SQLParser;
 
+{ # package scope
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
@@ -2193,6 +2479,29 @@ use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
 $Data::Dumper::Quotekeys = 0;
+
+my $quoted_ident   = qr/`[^`]+`/;
+my $unquoted_ident = qr/
+   \@{0,2}         # optional @ or @@ for variables
+   \w+             # the ident name
+   (?:\([^\)]*\))? # optional function params
+/x;
+
+my $ident_alias = qr/
+  \s+                                 # space before alias
+  (?:(AS)\s+)?                        # optional AS keyword
+  ((?>$quoted_ident|$unquoted_ident)) # alais
+/xi;
+
+my $table_ident = qr/(?:
+   ((?:(?>$quoted_ident|$unquoted_ident)\.?){1,2}) # table
+   (?:$ident_alias)?                               # optional alias
+)/xo;
+
+my $column_ident = qr/(?:
+   ((?:(?>$quoted_ident|$unquoted_ident|\*)\.?){1,3}) # column
+   (?:$ident_alias)?                                  # optional alias
+)/xo;
 
 sub new {
    my ( $class, %args ) = @_;
@@ -2219,14 +2528,14 @@ sub parse {
    if ( $query =~ s/^(\w+)\s+// ) {
       $type = lc $1;
       MKDEBUG && _d('Query type:', $type);
-      if ( $type !~ m/$allowed_types/i ) {
-         return;
-      }
+      die "Cannot parse " . uc($type) . " queries"
+         unless $type =~ m/$allowed_types/i;
    }
    else {
-      MKDEBUG && _d('No first word/type');
-      return;
+      die "Query does not begin with a word";  # shouldn't happen
    }
+
+   $query = $self->normalize_keyword_spaces($query);
 
    my @subqueries;
    if ( $query =~ m/(\(SELECT )/i ) {
@@ -2273,12 +2582,12 @@ sub _parse_clauses {
 
       if ( $clause eq 'select' ) {
          MKDEBUG && _d('Parsing subquery clauses');
+         $struct->{select}->{type} = 'select';
          $self->_parse_clauses($struct->{select});
       }
    }
    return;
 }
-
 
 sub clean_query {
    my ( $self, $query ) = @_;
@@ -2289,6 +2598,12 @@ sub clean_query {
    $query =~ s!/\*.*?\*/!!g;   # /* comments */
    $query =~ s/^\s+//;         # leading spaces
    $query =~ s/\s+$//;         # trailing spaces
+
+   return $query;
+}
+
+sub normalize_keyword_spaces {
+   my ( $self, $query ) = @_;
 
    $query =~ s/\b(VALUE(?:S)?)\(/$1 (/i;
    $query =~ s/\bON\(/on (/gi;
@@ -2346,6 +2661,15 @@ sub parse_insert {
    my $keywords   = qr/(LOW_PRIORITY|DELAYED|HIGH_PRIORITY|IGNORE)/i;
    1 while $query =~ s/$keywords\s+/$struct->{keywords}->{lc $1}=1, ''/gie;
 
+   if ( $query =~ m/ON DUPLICATE KEY UPDATE (.+)/i ) {
+      my $values = $1;
+      die "No values after ON DUPLICATE KEY UPDATE: $query" unless $values;
+      $struct->{clauses}->{on_duplicate} = $values;
+      MKDEBUG && _d('Clause: on duplicate key update', $values);
+
+      $query =~ s/\s+ON DUPLICATE KEY UPDATE.+//;
+   }
+
    if ( my @into = ($query =~ m/
             (?:INTO\s+)?            # INTO, optional
             (.+?)\s+                # table ref
@@ -2368,17 +2692,10 @@ sub parse_insert {
       die "INSERT/REPLACE without clause after table: $query"
          unless $next_clause;
       $next_clause = 'values' if $next_clause eq 'value';
-      my ($values, $on) = ($query =~ m/\G(.+?)(ON|\Z)/gci);
+      my ($values) = ($query =~ m/\G(.+)/gci);
       die "INSERT/REPLACE without values: $query" unless $values;
       $struct->{clauses}->{$next_clause} = $values;
       MKDEBUG && _d('Clause:', $next_clause, $values);
-
-      if ( $on ) {
-         ($values) = ($query =~ m/ON DUPLICATE KEY UPDATE (.+)/i);
-         die "No values after ON DUPLICATE KEY UPDATE: $query" unless $values;
-         $struct->{clauses}->{on_duplicate} = $values;
-         MKDEBUG && _d('Clause: on duplicate key update', $values);
-      }
    }
 
    ($struct->{unknown}) = ($query =~ m/\G(.+)/);
@@ -2437,137 +2754,88 @@ sub parse_update {
 sub parse_from {
    my ( $self, $from ) = @_;
    return unless $from;
-   MKDEBUG && _d('FROM clause:', $from);
+   MKDEBUG && _d('Parsing FROM', $from);
 
+   my $comma_join = qr/(?>\s*,\s*)/;
+   my $ansi_join  = qr/(?>
+     \s+
+     (?:(?:INNER|CROSS|STRAIGHT_JOIN|LEFT|RIGHT|OUTER|NATURAL)\s+)*
+     JOIN
+     \s+
+   )/xi;
 
-   my @tbls;  # All parsed tables.
-   my $tbl;   # This gets pushed to @tbls when it's set.  It may not be
+   my @tbls;     # all table refs, a hashref for each
+   my $tbl_ref;  # current table ref hashref
+   my $join;     # join info hahsref for current table ref
+   foreach my $thing ( split /($comma_join|$ansi_join)/io, $from ) {
+      die "Error parsing FROM clause" unless $thing;
 
-   my $pending_tbl;         
-   my $state  = undef;  
-   my $join   = '';  # JOIN syntax words, without JOIN; becomes type
-   my $joinno = 0;   # join number for debugging
-   my $redo   = 0;   # save $pending_tbl, redo loop for new JOIN
+      $thing =~ s/^\s+//;
+      $thing =~ s/\s+$//;
+      MKDEBUG && _d('Table thing:', $thing);
 
-   my $join_back  = 0;
-   my $last_thing = '';
+      if ( $thing =~ m/\s+(?:ON|USING)\s+/i ) {
+         MKDEBUG && _d("JOIN condition");
+         my ($tbl_ref_txt, $join_condition_verb, $join_condition_value)
+            = $thing =~ m/^(.+?)\s+(ON|USING)\s+(.+)/i;
 
-   my $join_delim
-      = qr/,|INNER|CROSS|STRAIGHT_JOIN|LEFT|RIGHT|OUTER|NATURAL|JOIN|ON|USING/i;
-   my $next_tbl
-      = qr/,|INNER|CROSS|STRAIGHT_JOIN|LEFT|RIGHT|OUTER|NATURAL|JOIN/i;
+         $tbl_ref = $self->parse_table_reference($tbl_ref_txt);
 
-   foreach my $thing ( split(/\s*($join_delim)\s+/io, $from) ) {
-      next unless $thing;
-      MKDEBUG && _d('Table thing:', $thing, 'state:', $state); 
+         $join->{condition} = lc $join_condition_verb;
+         if ( $join->{condition} eq 'on' ) {
+            my $where      = $self->parse_where($join_condition_value);
+            $join->{where} = $where; 
+         }
+         else { # USING
+            $join_condition_value =~ s/^\s*\(//;
+            $join_condition_value =~ s/\)\s*$//;
+            $join->{columns} = $self->_parse_csv($join_condition_value);
+         }
+      }
+      elsif ( $thing =~ m/(?:,|JOIN)/i ) {
+         if ( $join ) {
+            $tbl_ref->{join} = $join;
+         }
+         push @tbls, $tbl_ref;
+         MKDEBUG && _d("Complete table reference:", Dumper($tbl_ref));
 
-      if ( !$state && $thing !~ m/$join_delim/i ) {
-         MKDEBUG && _d('Table factor');
-         $tbl = { $self->parse_table_reference($thing) };
+         $tbl_ref = undef;
+         $join    = {};
 
-         $join_back = 1 if ($last_thing || '') eq ',';
+         $join->{to} = $tbls[-1]->{tbl};
+         if ( $thing eq ',' ) {
+            $join->{type} = 'inner';
+            $join->{ansi} = 0;
+         }
+         else { # ansi join
+            my $type = $thing =~ m/^(.+?)\s+JOIN$/i ? lc $1 : 'inner';
+            $join->{type} = $type;
+            $join->{ansi} = 1;
+         }
       }
       else {
-         if ( !$state ) {
-            $joinno++;
-            MKDEBUG && _d('JOIN', $joinno, 'start');
-            $join .= ' ' . lc $thing;
-            if ( $join =~ m/join$/ ) {
-               $join =~ s/ join$//;
-               $join =~ s/^\s+//;
-               MKDEBUG && _d('JOIN', $joinno, 'type:', $join);
-               my $last_tbl = $tbls[-1];
-               die "Invalid syntax: $from\n"
-                  . "JOIN without preceding table reference" unless $last_tbl;
-               $pending_tbl->{join} = {
-                  to   => $last_tbl->{name},
-                  type => $join || 'inner',
-                  ansi => 1,
-               };
-               $join    = '';
-               $state   = 'join tbl';
-            }
-         }
-         elsif ( $state eq 'join tbl' ) {
-            my %tbl_ref = $self->parse_table_reference($thing);
-            @{$pending_tbl}{keys %tbl_ref} = values %tbl_ref;
-            $state = 'join condition';
-         }
-         elsif ( $state eq 'join condition' ) {
-            if ( $thing =~ m/$next_tbl/io ) {
-               MKDEBUG && _d('JOIN', $joinno, 'end');
-               $tbl  = $pending_tbl;
-               $redo = 1;  # save $pending_tbl then redo this new JOIN
-            }
-            elsif ( $thing =~ m/ON|USING/i ) {
-               MKDEBUG && _d('JOIN', $joinno, 'codition');
-               $pending_tbl->{join}->{condition} = lc $thing;
-            }
-            else {
-               MKDEBUG && _d('JOIN', $joinno, 'predicate');
-               if ( $pending_tbl->{join}->{condition} eq 'on' ) {
-                  $pending_tbl->{join}->{where} = $self->parse_where($thing);
-               }
-               else {
-                  $thing =~ s/^\s*\(//;
-                  $thing =~ s/\)\s*$//;
-                  $pending_tbl->{join}->{columns} = $self->parse_csv($thing);
-               }
-            }
-         }
-         else {
-            die "Unknown state '$state' parsing JOIN syntax: $from";
-         }
-      }
-
-      $last_thing = $thing;
-
-      if ( $tbl ) {
-         if ( $join_back ) {
-            my $prev_tbl = $tbls[-1];
-            if ( $tbl->{join} ) {
-               die "Cannot implicitly join $tbl->{name} to $prev_tbl->{name} "
-                  . "because it is already joined to $tbl->{join}->{to}";
-            }
-            $tbl->{join} = {
-               to   => $prev_tbl->{name},
-               type => 'inner',
-               ansi => 0,
-            }
-         }
-
-         push @tbls, $tbl;  # save table
-
-         $tbl         = undef;
-         $state       = undef;
-         $pending_tbl = undef;
-         $join        = '';
-         $join_back   = 0;
-      }
-      else {
-         MKDEBUG && _d('Table pending:', Dumper($pending_tbl));
-      }
-      if ( $redo ) {
-         MKDEBUG && _d("Redoing this thing");
-         $redo = 0;
-         redo;
+         $tbl_ref = $self->parse_table_reference($thing);
+         MKDEBUG && _d('Table reference:', Dumper($tbl_ref));
       }
    }
 
-   if ( $pending_tbl ) {
-      push @tbls, $pending_tbl;
+   if ( $tbl_ref ) {
+      if ( $join ) {
+         $tbl_ref->{join} = $join;
+      }
+      push @tbls, $tbl_ref;
+      MKDEBUG && _d("Complete table reference:", Dumper($tbl_ref));
    }
 
-   MKDEBUG && _d('Parsed tables:', Dumper(\@tbls));
    return \@tbls;
 }
 
 sub parse_table_reference {
    my ( $self, $tbl_ref ) = @_;
+   return unless $tbl_ref;
+   MKDEBUG && _d('Parsing table reference:', $tbl_ref);
    my %tbl;
-   MKDEBUG && _d('Table reference:', $tbl_ref);
 
-   my $index_hint;
    if ( $tbl_ref =~ s/
          \s+(
             (?:FORCE|USE|INGORE)\s
@@ -2575,35 +2843,23 @@ sub parse_table_reference {
             \s*\([^\)]+\)\s*
          )//xi)
    {
-      MKDEBUG && _d('Index hint:', $1);
       $tbl{index_hint} = $1;
+      MKDEBUG && _d('Index hint:', $tbl{index_hint});
    }
 
-   my $tbl_ident = qr/
-      (?:`[^`]+`|[\w*]+)       # `something`, or something
-      (?:                      # optionally followed by either
-         \.(?:`[^`]+`|[\w*]+)  #   .`something` or .something, or
-         |\([^\)]*\)           #   (function stuff)  (e.g. NOW())
-      )?             
-   /x;
-
-   my @words = map { s/`//g if defined; $_; } $tbl_ref =~ m/($tbl_ident)/g;
-   MKDEBUG && _d('Table ref words:', @words);
-
-   my ($db, $tbl) = $words[0] =~ m/(?:(.+?)\.)?(.+)$/;
-   $tbl{db}   = $db if $db;
-   $tbl{name} = $tbl;
-
-   if ( $words[2] ) {
-      die "Bad table ref: $tbl_ref" unless ($words[1] || '') =~ m/AS/i;
-      $tbl{alias}          = $words[2];
-      $tbl{explicit_alias} = 1;
+   if ( $tbl_ref =~ m/$table_ident/ ) {
+      my ($db_tbl, $as, $alias) = ($1, $2, $3); # XXX
+      my $ident_struct = $self->parse_identifier('table', $db_tbl);
+      $alias =~ s/`//g if $alias;
+      @tbl{keys %$ident_struct} = values %$ident_struct;
+      $tbl{explicit_alias} = 1 if $as;
+      $tbl{alias}          = $alias if $alias;
    }
-   elsif ( $words[1] ) {
-      $tbl{alias} = $words[1];
+   else {
+      die "Table ident match failed";  # shouldn't happen
    }
 
-   return %tbl;
+   return \%tbl;
 }
 {
    no warnings;  # Why? See same line above.
@@ -2614,24 +2870,33 @@ sub parse_table_reference {
 sub parse_where {
    my ( $self, $where ) = @_;
    return unless $where;
-   MKDEBUG && _d("Parsing WHERE clause:", $where);
+   MKDEBUG && _d("Parsing WHERE", $where);
 
-   my $op = qr/
-      (?:\b|\s)
+   my $op_symbol = qr/
       (?:
-          <=
-         |>=
-         |<>
-         |!=
-         |<
-         |>
-         |=
-         |(?:NOT\s)?LIKE
-         |IS(?:\sNOT\s)?
-         |(?:\sNOT\s)?BETWEEN
-         |(?:NOT\s)?IN
+       <=
+      |>=
+      |<>
+      |!=
+      |<
+      |>
+      |=
+   )/xi;
+   my $op_verb = qr/
+      (?:
+          (?:(?:NOT\s)?LIKE)
+         |(?:IS(?:\sNOT\s)?)
+         |(?:(?:\sNOT\s)?BETWEEN)
+         |(?:(?:NOT\s)?IN)
       )
    /xi;
+   my $op_pat = qr/
+   (
+      (?>
+          (?:$op_symbol)  # don't need spaces around the symbols, e.g.: col=1
+         |(?:\s+$op_verb) # must have space before verb op, e.g.: col LIKE ...
+      )
+   )/x;
 
    my $offset = 0;
    my $pred   = "";
@@ -2642,13 +2907,13 @@ sub parse_where {
 
       $pred = substr $where, $offset, ($pos-$offset);
       push @pred, $pred;
-      push @has_op, $pred =~ m/$op/io ? 1 : 0;
+      push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
 
       $offset = $pos;
    }
    $pred = substr $where, $offset;
    push @pred, $pred;
-   push @has_op, $pred =~ m/$op/io ? 1 : 0;
+   push @has_op, $pred =~ m/$op_pat/o ? 1 : 0;
    MKDEBUG && _d("Predicate fragments:", Dumper(\@pred));
    MKDEBUG && _d("Predicate frags with operators:", @has_op);
 
@@ -2687,13 +2952,13 @@ sub parse_where {
       if ( $pred =~ s/^(and|or)\s+//i ) {
          $conj = lc $1;
       }
-      my ($col, $op, $val) = $pred =~ m/^(.+?)($op)(.*)/; 
+      my ($col, $op, $val) = $pred =~ m/^(.+?)$op_pat(.+)$/o;
       if ( !$col || !$op ) {
          if ( $self->_is_constant($pred) ) {
             $val = lc $pred;
          }
          else {
-            die "Failed to parse predicate: $pred";
+            die "Failed to parse WHERE condition: $pred";
          }
       }
 
@@ -2711,10 +2976,10 @@ sub parse_where {
       $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
 
       push @predicates, {
-         column    => $col,
-         operator  => $op,
-         value     => $val,
          predicate => $conj,
+         left_arg  => $col,
+         operator  => $op,
+         right_arg => $val,
       };
    }
 
@@ -2737,11 +3002,11 @@ sub parse_having {
 sub parse_group_by {
    my ( $self, $group_by ) = @_;
    return unless $group_by;
-   MKDEBUG && _d('Parse GROUP BY', $group_by);
+   MKDEBUG && _d('Parsing GROUP BY', $group_by);
 
    my $with_rollup = $group_by =~ s/\s+WITH ROLLUP\s*//i;
 
-   my $idents = $self->parse_identifiers( $self->parse_csv($group_by) );
+   my $idents = $self->parse_identifiers( $self->_parse_csv($group_by) );
 
    $idents->{with_rollup} = 1 if $with_rollup;
 
@@ -2751,8 +3016,8 @@ sub parse_group_by {
 sub parse_order_by {
    my ( $self, $order_by ) = @_;
    return unless $order_by;
-   MKDEBUG && _d('Parse ORDER BY', $order_by);
-   my $idents = $self->parse_identifiers( $self->parse_csv($order_by) );
+   MKDEBUG && _d('Parsing ORDER BY', $order_by);
+   my $idents = $self->parse_identifiers( $self->_parse_csv($order_by) );
    return $idents;
 }
 
@@ -2778,58 +3043,122 @@ sub parse_limit {
 sub parse_values {
    my ( $self, $values ) = @_;
    return unless $values;
-   my @vals = ($values =~ m/\([^\)]+\)/g);
-   return \@vals;
+   $values =~ s/^\s*\(//;
+   $values =~ s/\s*\)//;
+   my $vals = $self->_parse_csv(
+      $values,
+      quoted_values => 1,
+      remove_quotes => 0,
+   );
+   return $vals;
 }
 
 sub parse_set {
    my ( $self, $set ) = @_;
    MKDEBUG && _d("Parse SET", $set);
    return unless $set;
-   my $vals = $self->parse_csv($set);
+   my $vals = $self->_parse_csv($set);
    return unless $vals && @$vals;
 
    my @set;
    foreach my $col_val ( @$vals ) {
-      my ($tbl_col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
-
-      my ($c) = $val =~ m/^(['"])/;
-      if ( $c ) {
-         $val =~ s/^$c//;
-         $val =~ s/$c$//;
-      }
-
-      my ($col, $tbl, $db) = reverse split(/\./, $tbl_col);
-
-      my $set_struct = {
-         column => $col,
-         value  => $val,
+      my ($col, $val)  = $col_val =~ m/^([^=]+)\s*=\s*(.+)/;
+      my $ident_struct = $self->parse_identifier('column', $col);
+      my $set_struct   = {
+         %$ident_struct,
+         value => $val,
       };
-      $set_struct->{table}    = $tbl if $tbl;
-      $set_struct->{database} = $db  if $db;
       MKDEBUG && _d("SET:", Dumper($set_struct));
       push @set, $set_struct;
    }
    return \@set;
 }
 
-sub parse_csv {
-   my ( $self, $vals ) = @_;
+sub _parse_csv {
+   my ( $self, $vals, %args ) = @_;
    return unless $vals;
-   my @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+
+   my @vals;
+   if ( $args{quoted_values} ) {
+      my $quote_char   = '';
+      VAL:
+      foreach my $val ( split(',', $vals) ) {
+         MKDEBUG && _d("Next value:", $val);
+         if ( $quote_char ) {
+            MKDEBUG && _d("Value is part of previous quoted value");
+            $vals[-1] .= ",$val";
+
+            if ( $val =~ m/[^\\]*$quote_char$/ ) {
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+               MKDEBUG && _d("Previous quoted value is complete:", $vals[-1]);
+               $quote_char = '';
+            }
+
+            next VAL;
+         }
+
+         $val =~ s/^\s+//;
+
+         if ( $val =~ m/^(['"])/ ) {
+            MKDEBUG && _d("Value is quoted");
+            $quote_char = $1;  # XXX
+            if ( $val =~ m/.$quote_char$/ ) {
+               MKDEBUG && _d("Value is complete");
+               $quote_char = '';
+               if ( $args{remove_quotes} ) {
+                  $vals[-1] =~ s/^\s*$quote_char//;
+                  $vals[-1] =~ s/$quote_char\s*$//;
+               }
+            }
+            else {
+               MKDEBUG && _d("Quoted value is not complete");
+            }
+         }
+         else {
+            $val =~ s/\s+$//;
+         }
+
+         MKDEBUG && _d("Saving value", ($quote_char ? "fragment" : ""));
+         push @vals, $val;
+      }
+   }
+   else {
+      @vals = map { s/^\s+//; s/\s+$//; $_ } split(',', $vals);
+   }
+
    return \@vals;
 }
 {
    no warnings;  # Why? See same line above.
-   *parse_on_duplicate = \&parse_csv;
+   *parse_on_duplicate = \&_parse_csv;
 }
 
 sub parse_columns {
    my ( $self, $cols ) = @_;
-   my @cols = map {
-      my %ref = $self->parse_table_reference($_);
-      \%ref;
-   } @{ $self->parse_csv($cols) };
+   MKDEBUG && _d('Parsing columns list:', $cols);
+
+   my @cols;
+   pos $cols = 0;
+   while (pos $cols < length $cols) {
+      if ($cols =~ m/\G\s*$column_ident\s*(?>,|\Z)/gcxo) {
+         my ($db_tbl_col, $as, $alias) = ($1, $2, $3); # XXX
+         my $ident_struct = $self->parse_identifier('column', $db_tbl_col);
+         $alias =~ s/`//g if $alias;
+         my $col_struct = {
+            %$ident_struct,
+            ($as    ? (explicit_alias => 1)      : ()),
+            ($alias ? (alias          => $alias) : ()),
+         };
+         push @cols, $col_struct;
+      }
+      else {
+         die "Column ident match failed";  # shouldn't happen
+      }
+   }
+
    return \@cols;
 }
 
@@ -2916,7 +3245,7 @@ sub remove_subqueries {
 sub parse_identifiers {
    my ( $self, $idents ) = @_;
    return unless $idents;
-   MKDEBUG && _d("Parse identifiers");
+   MKDEBUG && _d("Parsing identifiers");
 
    my @ident_parts;
    foreach my $ident ( @$idents ) {
@@ -2949,6 +3278,34 @@ sub parse_identifiers {
    return \@ident_parts;
 }
 
+sub parse_identifier {
+   my ( $self, $type, $ident ) = @_;
+   return unless $type && $ident;
+   MKDEBUG && _d("Parsing", $type, "identifier:", $ident);
+
+   my %ident_struct;
+   my @ident_parts = map { s/`//g; $_; } split /[.]/, $ident;
+   if ( @ident_parts == 3 ) {
+      @ident_struct{qw(db tbl col)} = @ident_parts;
+   }
+   elsif ( @ident_parts == 2 ) {
+      my @parts_for_type = $type eq 'column' ? qw(tbl col)
+                         : $type eq 'table'  ? qw(db  tbl)
+                         : die "Invalid identifier type: $type";
+      @ident_struct{@parts_for_type} = @ident_parts;
+   }
+   elsif ( @ident_parts == 1 ) {
+      my $part = $type eq 'column' ? 'col' : 'tbl';
+      @ident_struct{($part)} = @ident_parts;
+   }
+   else {
+      die "Invalid number of parts in $type reference: $ident";
+   }
+
+   MKDEBUG && _d($type, "identifier struct:", Dumper(\%ident_struct));
+   return \%ident_struct;
+}
+
 sub split_unquote {
    my ( $self, $db_tbl, $default_db ) = @_;
    $db_tbl =~ s/`//g;
@@ -2958,6 +3315,837 @@ sub split_unquote {
       $db  = $default_db;
    }
    return ($db, $tbl);
+}
+
+sub is_identifier {
+   my ( $self, $thing ) = @_;
+
+   return 0 unless $thing;
+
+   return 0 if $thing =~ m/\s*['"]/;
+
+   return 0 if $thing =~ m/^\s*\d+(?:\.\d+)?\s*$/;
+
+   return 0 if $thing =~ m/^\s*(?>
+       NULL
+      |DUAL
+   )\s*$/xi;
+
+   return 1 if $thing =~ m/^\s*$column_ident\s*$/;
+
+   return 0;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End SQLParser package
+# ###########################################################################
+
+# ###########################################################################
+# TableUsage package 7427
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableUsage.pm
+#   trunk/common/t/TableUsage.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package TableUsage;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(QueryParser SQLParser);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my $self = {
+      %args,
+   };
+
+   return bless $self, $class;
+}
+
+sub get_table_usage {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(query);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($query)   = @args{@required_args};
+   MKDEBUG && _d('Getting table access for',
+      substr($query, 0, 100), (length $query > 100 ? '...' : ''));
+
+   my $cats;  # arrayref of CAT hashrefs for each table
+
+   my $query_struct;
+   eval {
+      $query_struct = $self->{SQLParser}->parse($query);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d('Failed to parse query with SQLParser:', $EVAL_ERROR);
+      if ( $EVAL_ERROR =~ m/Cannot parse/ ) {
+         $cats = $self->_get_tables_used_from_query_parser(%args);
+      }
+      else {
+         die $EVAL_ERROR;
+      }
+   }
+   else {
+      $cats = $self->_get_tables_used_from_query_struct(
+         query_struct => $query_struct,
+         %args,
+      );
+   }
+
+   MKDEBUG && _d('Query table access:', Dumper($cats));
+   return $cats;
+}
+
+sub _get_tables_used_from_query_parser {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(query);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($query) = @args{@required_args};
+   MKDEBUG && _d('Getting tables used from query parser');
+
+   $query = $self->{QueryParser}->clean_query($query);
+   my ($query_type) = $query =~ m/(\w+)\s+/;
+   $query_type = uc $query_type;
+   die "Query does not begin with a word" unless $query_type; # shouldn't happen
+
+   my @tables_used;
+   foreach my $table ( $self->{QueryParser}->get_tables($query) ) {
+      $table =~ s/`//g;
+      push @{$tables_used[0]}, {
+         table   => $table,
+         context => $query_type,
+      };
+   }
+
+   return \@tables_used;
+}
+
+sub _get_tables_used_from_query_struct {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(query_struct);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($query_struct) = @args{@required_args};
+   my $sp             = $self->{SQLParser};
+
+   MKDEBUG && _d('Getting table used from query struct');
+
+   my $query_type = uc $query_struct->{type};
+   my $tbl_refs   = $query_type =~ m/(?:SELECT|DELETE)/  ? 'from'
+                  : $query_type =~ m/(?:INSERT|REPLACE)/ ? 'into'
+                  : $query_type =~ m/UPDATE/             ? 'tables'
+                  : die "Cannot find table references for $query_type queries";
+   my $tables     = $query_struct->{$tbl_refs};
+
+   my $where;
+   if ( $query_struct->{where} ) {
+      $where = $self->_get_tables_used_in_where(
+         %args,
+         tables  => $tables,
+         where   => $query_struct->{where},
+      );
+   }
+
+   my @tables_used;
+   if ( $query_type eq 'UPDATE' && @{$query_struct->{tables}} > 1 ) {
+      MKDEBUG && _d("Multi-table UPDATE");
+
+      my @join_tables;
+      foreach my $table ( @$tables ) {
+         my $table = $self->_qualify_table_name(
+            %args,
+            tables => $tables,
+            db     => $table->{db},
+            tbl    => $table->{tbl},
+         );
+         my $table_usage = {
+            context => 'JOIN',
+            table   => $table,
+         };
+         MKDEBUG && _d("Table usage from TLIST:", Dumper($table_usage));
+         push @join_tables, $table_usage;
+      }
+      if ( $where && $where->{joined_tables} ) {
+         foreach my $table ( @{$where->{joined_tables}} ) {
+            my $table_usage = {
+               context => $query_type,
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from WHERE (implicit join):",
+               Dumper($table_usage));
+            push @join_tables, $table_usage;
+         }
+      }
+
+      my @where_tables;
+      if ( $where && $where->{filter_tables} ) {
+         foreach my $table ( @{$where->{filter_tables}} ) {
+            my $table_usage = {
+               context => 'WHERE',
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from WHERE:", Dumper($table_usage));
+            push @where_tables, $table_usage;
+         }
+      }
+
+      my $set_tables = $self->_get_tables_used_in_set(
+         %args,
+         tables  => $tables,
+         set     => $query_struct->{set},
+      );
+      foreach my $table ( @$set_tables ) {
+         my @table_usage = (
+            {  # the written table
+               context => 'UPDATE',
+               table   => $table->{table},
+            },
+            {  # source of data written to the written table
+               context => 'SELECT',
+               table   => $table->{value},
+            },
+         );
+         MKDEBUG && _d("Table usage from UPDATE SET:", Dumper(\@table_usage));
+         push @tables_used, [
+            @table_usage,
+            @join_tables,
+            @where_tables,
+         ];
+      }
+   }
+   else {
+      if ( $query_type eq 'SELECT' ) {
+         my $clist_tables = $self->_get_tables_used_in_columns(
+            %args,
+            tables  => $tables,
+            columns => $query_struct->{columns},
+         );
+         foreach my $table ( @$clist_tables ) {
+            my $table_usage = {
+               context => 'SELECT',
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from CLIST:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( @$tables > 1 || $query_type ne 'SELECT' ) {
+         my $default_context = @$tables > 1 ? 'TLIST' : $query_type;
+         foreach my $table ( @$tables ) {
+            my $qualified_table = $self->_qualify_table_name(
+               %args,
+               tables => $tables,
+               db     => $table->{db},
+               tbl    => $table->{tbl},
+            );
+
+            my $context = $default_context;
+            if ( $table->{join} && $table->{join}->{condition} ) {
+                $context = 'JOIN';
+               if ( $table->{join}->{condition} eq 'using' ) {
+                  MKDEBUG && _d("Table joined with USING condition");
+                  my $joined_table  = $self->_qualify_table_name(
+                     %args,
+                     tables => $tables,
+                     tbl    => $table->{join}->{to},
+                  );
+                  $self->_change_context(
+                     tables      => $tables,
+                     table       => $joined_table,
+                     tables_used => $tables_used[0],
+                     old_context => 'TLIST',
+                     new_context => 'JOIN',
+                  );
+               }
+               elsif ( $table->{join}->{condition} eq 'on' ) {
+                  MKDEBUG && _d("Table joined with ON condition");
+                  my $on_tables = $self->_get_tables_used_in_where(
+                     %args,
+                     tables => $tables,
+                     where  => $table->{join}->{where},
+                  );
+                  foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
+                     $self->_change_context(
+                        tables      => $tables,
+                        table       => $joined_table,
+                        tables_used => $tables_used[0],
+                        old_context => 'TLIST',
+                        new_context => 'JOIN',
+                     );
+                  }
+               }
+               else {
+                  warn "Unknown JOIN condition: $table->{join}->{condition}";
+               }
+            }
+
+            my $table_usage = {
+               context => $context,
+               table   => $qualified_table,
+            };
+            MKDEBUG && _d("Table usage from TLIST:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( $where && $where->{joined_tables} ) {
+         foreach my $joined_table ( @{$where->{joined_tables}} ) {
+            MKDEBUG && _d("Table joined implicitly in WHERE:", $joined_table);
+            $self->_change_context(
+               tables      => $tables,
+               table       => $joined_table,
+               tables_used => $tables_used[0],
+               old_context => 'TLIST',
+               new_context => 'JOIN',
+            );
+         }
+      }
+
+      if ( $query_type =~ m/(?:INSERT|REPLACE)/ ) {
+         if ( $query_struct->{select} ) {
+            MKDEBUG && _d("Getting tables used in INSERT-SELECT");
+            my $select_tables = $self->_get_tables_used_from_query_struct(
+               %args,
+               query_struct => $query_struct->{select},
+            );
+            push @{$tables_used[0]}, @{$select_tables->[0]};
+         }
+         else {
+            my $table_usage = {
+               context => 'SELECT',
+               table   => 'DUAL',
+            };
+            MKDEBUG && _d("Table usage from SET/VALUES:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+      elsif ( $query_type eq 'UPDATE' ) {
+         my $set_tables = $self->_get_tables_used_in_set(
+            %args,
+            tables => $tables,
+            set    => $query_struct->{set},
+         );
+         foreach my $table ( @$set_tables ) {
+            my $table_usage = {
+               context => 'SELECT',
+               table   => $table->{value_is_table} ? $table->{table} : 'DUAL',
+            };
+            MKDEBUG && _d("Table usage from SET:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+
+      if ( $where && $where->{filter_tables} ) {
+         foreach my $table ( @{$where->{filter_tables}} ) {
+            my $table_usage = {
+               context => 'WHERE',
+               table   => $table,
+            };
+            MKDEBUG && _d("Table usage from WHERE:", Dumper($table_usage));
+            push @{$tables_used[0]}, $table_usage;
+         }
+      }
+   }
+
+   return \@tables_used;
+}
+
+sub _get_tables_used_in_columns {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(tables columns);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $columns) = @args{@required_args};
+
+   MKDEBUG && _d("Getting tables used in CLIST");
+   my @tables;
+
+   if ( @$tables == 1 ) {
+      MKDEBUG && _d("Single table SELECT:", $tables->[0]->{tbl});
+      my $table = $self->_qualify_table_name(
+         %args,
+         db  => $tables->[0]->{db},
+         tbl => $tables->[0]->{tbl},
+      );
+      @tables = ($table);
+   }
+   elsif ( @$columns == 1 && $columns->[0]->{col} eq '*' ) {
+      if ( $columns->[0]->{tbl} ) {
+         MKDEBUG && _d("SELECT all columns from one table");
+         my $table = $self->_qualify_table_name(
+            %args,
+            db  => $columns->[0]->{db},
+            tbl => $columns->[0]->{tbl},
+         );
+         @tables = ($table);
+      }
+      else {
+         MKDEBUG && _d("SELECT all columns from all tables");
+         foreach my $table ( @$tables ) {
+            my $table = $self->_qualify_table_name(
+               %args,
+               tables => $tables,
+               db     => $table->{db},
+               tbl    => $table->{tbl},
+            );
+            push @tables, $table;
+         }
+      }
+   }
+   else {
+      MKDEBUG && _d(scalar @$tables, "table SELECT");
+      my %seen;
+      COLUMN:
+      foreach my $column ( @$columns ) {
+         next COLUMN unless $column->{tbl};
+         my $table = $self->_qualify_table_name(
+            %args,
+            db  => $column->{db},
+            tbl => $column->{tbl},
+         );
+         push @tables, $table if $table && !$seen{$table}++;
+      }
+   }
+
+   return \@tables;
+}
+
+sub _get_tables_used_in_where {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(tables where);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $where) = @args{@required_args};
+   my $sql_parser = $self->{SQLParser};
+
+   MKDEBUG && _d("Getting tables used in WHERE");
+
+   my %filter_tables;
+   my %join_tables;
+   CONDITION:
+   foreach my $cond ( @$where ) {
+      MKDEBUG && _d("Condition:", Dumper($cond));
+      my @tables;  # tables used in this condition
+      ARG:
+      foreach my $arg ( qw(left_arg right_arg) ) {
+         if ( $sql_parser->is_identifier($cond->{$arg}) ) {
+            my $ident_struct = $sql_parser->parse_identifier(
+               'column',
+               $cond->{$arg}
+            );
+
+            if ( !$ident_struct->{tbl} ) {
+               if ( @$tables == 1 ) {
+                  MKDEBUG && _d("Condition column is not table-qualified; ",
+                     "using query's only table:", $tables->[0]->{tbl});
+                  $ident_struct->{tbl} = $tables->[0]->{tbl};
+               }
+               else {
+                  MKDEBUG && _d("Condition column is not table-qualified and",
+                     "query has multiple tables; cannot determine its table");
+                  next ARG;
+               }
+            }
+
+            if ( !$ident_struct->{db} && @$tables == 1 && $tables->[0]->{db} ) {
+               MKDEBUG && _d("Condition column is not database-qualified; ",
+                  "using its table's database:", $tables->[0]->{db});
+               $ident_struct->{db} = $tables->[0]->{db};
+            }
+
+            my $table = $self->_qualify_table_name(
+               %args,
+               %$ident_struct,
+            );
+            if ( $table ) {
+               push @tables, $table;
+            }
+         }
+      }  # ARG
+
+      if ( @tables == 0 ) {
+         MKDEBUG && _d("Condition is an expression");
+         $filter_tables{'DUAL'} = undef;
+      }
+      elsif ( @tables == 1 ) {
+         MKDEBUG && _d("Condition filters table", $tables[0]);
+         $filter_tables{$tables[0]} = undef;
+      }
+      else {
+         MKDEBUG && _d("Condition joins tables", $tables[0], "and", $tables[1]);
+         $join_tables{$tables[0]} = undef;
+         $join_tables{$tables[1]} = undef;
+      }
+   }  # CONDITION
+
+   return {
+      filter_tables => [ sort keys %filter_tables ],
+      joined_tables => [ sort keys %join_tables   ],
+   };
+}
+
+sub _get_tables_used_in_set {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(tables set);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $set) = @args{@required_args};
+   my $sql_parser = $self->{SQLParser};
+
+   MKDEBUG && _d("Getting tables used in SET");
+
+   my @tables;
+   if ( @$tables == 1 ) {
+      my $table = $self->_qualify_table_name(
+         %args,
+         db  => $tables->[0]->{db},
+         tbl => $tables->[0]->{tbl},
+      );
+      $tables[0] = {
+         table => $table,
+         value => 'DUAL'
+      };
+   }
+   else {
+      foreach my $cond ( @$set ) {
+         next unless $cond->{tbl};
+         my $table = $self->_qualify_table_name(
+            %args,
+            db  => $cond->{db},
+            tbl => $cond->{tbl},
+         );
+
+         my $value          = 'DUAL';
+         my $value_is_table = 0;
+         if ( $sql_parser->is_identifier($cond->{value}) ) {
+            my $ident_struct = $sql_parser->parse_identifier(
+               'column',
+               $cond->{value},
+            );
+            $value_is_table = 1;
+            $value          = $self->_qualify_table_name(
+               %args,
+               db  => $ident_struct->{db},
+               tbl => $ident_struct->{tbl},
+            );
+         }
+
+         push @tables, {
+            table          => $table,
+            value          => $value,
+            value_is_table => $value_is_table,
+         };
+      }
+   }
+
+   return \@tables;
+}
+
+sub _get_real_table_name {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(tables name);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $name) = @args{@required_args};
+
+   foreach my $table ( @$tables ) {
+      if ( $table->{tbl} eq $name
+           || ($table->{alias} || "") eq $name ) {
+         MKDEBUG && _d("Real table name for", $name, "is", $table->{tbl});
+         return $table->{tbl};
+      }
+   }
+   MKDEBUG && _d("Table", $name, "does not exist in query");
+   return;
+}
+
+sub _qualify_table_name {
+   my ( $self, %args) = @_;
+   my @required_args = qw(tables tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables, $table) = @args{@required_args};
+
+   MKDEBUG && _d("Qualifying table with database:", $table);
+
+   my ($tbl, $db) = reverse split /[.]/, $table;
+
+   $tbl = $self->_get_real_table_name(%args, name => $tbl);
+   return unless $tbl;  # shouldn't happen
+
+   my $db_tbl;
+
+   if ( $db ) {
+      $db_tbl = "$db.$tbl";
+   }
+   elsif ( $args{db} ) {
+      $db_tbl = "$args{db}.$tbl";
+   }
+   else {
+      foreach my $tbl_info ( @$tables ) {
+         if ( ($tbl_info->{tbl} eq $tbl) && $tbl_info->{db} ) {
+            $db_tbl = "$tbl_info->{db}.$tbl";
+            last;
+         }
+      }
+
+      if ( !$db_tbl && $args{default_db} ) { 
+         $db_tbl = "$args{default_db}.$tbl";
+      }
+
+      if ( !$db_tbl ) {
+         MKDEBUG && _d("Cannot determine database for table", $tbl);
+         $db_tbl = $tbl;
+      }
+   }
+
+   MKDEBUG && _d("Table qualified with database:", $db_tbl);
+   return $db_tbl;
+}
+
+sub _change_context {
+   my ( $self, %args) = @_;
+   my @required_args = qw(tables_used table old_context new_context tables);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tables_used, $table, $old_context, $new_context) = @args{@required_args};
+   MKDEBUG && _d("Change context of table", $table, "from", $old_context,
+      "to", $new_context);
+   foreach my $used_table ( @$tables_used ) {
+      if (    $used_table->{table}   eq $table
+           && $used_table->{context} eq $old_context ) {
+         $used_table->{context} = $new_context;
+         return;
+      }
+   }
+   MKDEBUG && _d("Table", $table, "is not used; cannot set its context");
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End TableUsage package
+# ###########################################################################
+
+# ###########################################################################
+# Daemon package 6255
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Daemon.pm
+#   trunk/common/t/Daemon.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Daemon;
+
+use strict;
+use warnings FATAL => 'all';
+
+use POSIX qw(setsid);
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   foreach my $arg ( qw(o) ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $o = $args{o};
+   my $self = {
+      o        => $o,
+      log_file => $o->has('log') ? $o->get('log') : undef,
+      PID_file => $o->has('pid') ? $o->get('pid') : undef,
+   };
+
+   check_PID_file(undef, $self->{PID_file});
+
+   MKDEBUG && _d('Daemonized child will log to', $self->{log_file});
+   return bless $self, $class;
+}
+
+sub daemonize {
+   my ( $self ) = @_;
+
+   MKDEBUG && _d('About to fork and daemonize');
+   defined (my $pid = fork()) or die "Cannot fork: $OS_ERROR";
+   if ( $pid ) {
+      MKDEBUG && _d('I am the parent and now I die');
+      exit;
+   }
+
+   $self->{PID_owner} = $PID;
+   $self->{child}     = 1;
+
+   POSIX::setsid() or die "Cannot start a new session: $OS_ERROR";
+   chdir '/'       or die "Cannot chdir to /: $OS_ERROR";
+
+   $self->_make_PID_file();
+
+   $OUTPUT_AUTOFLUSH = 1;
+
+   if ( -t STDIN ) {
+      close STDIN;
+      open  STDIN, '/dev/null'
+         or die "Cannot reopen STDIN to /dev/null: $OS_ERROR";
+   }
+
+   if ( $self->{log_file} ) {
+      close STDOUT;
+      open  STDOUT, '>>', $self->{log_file}
+         or die "Cannot open log file $self->{log_file}: $OS_ERROR";
+
+      close STDERR;
+      open  STDERR, ">&STDOUT"
+         or die "Cannot dupe STDERR to STDOUT: $OS_ERROR"; 
+   }
+   else {
+      if ( -t STDOUT ) {
+         close STDOUT;
+         open  STDOUT, '>', '/dev/null'
+            or die "Cannot reopen STDOUT to /dev/null: $OS_ERROR";
+      }
+      if ( -t STDERR ) {
+         close STDERR;
+         open  STDERR, '>', '/dev/null'
+            or die "Cannot reopen STDERR to /dev/null: $OS_ERROR";
+      }
+   }
+
+   MKDEBUG && _d('I am the child and now I live daemonized');
+   return;
+}
+
+sub check_PID_file {
+   my ( $self, $file ) = @_;
+   my $PID_file = $self ? $self->{PID_file} : $file;
+   MKDEBUG && _d('Checking PID file', $PID_file);
+   if ( $PID_file && -f $PID_file ) {
+      my $pid;
+      eval { chomp($pid = `cat $PID_file`); };
+      die "Cannot cat $PID_file: $OS_ERROR" if $EVAL_ERROR;
+      MKDEBUG && _d('PID file exists; it contains PID', $pid);
+      if ( $pid ) {
+         my $pid_is_alive = kill 0, $pid;
+         if ( $pid_is_alive ) {
+            die "The PID file $PID_file already exists "
+               . " and the PID that it contains, $pid, is running";
+         }
+         else {
+            warn "Overwriting PID file $PID_file because the PID that it "
+               . "contains, $pid, is not running";
+         }
+      }
+      else {
+         die "The PID file $PID_file already exists but it does not "
+            . "contain a PID";
+      }
+   }
+   else {
+      MKDEBUG && _d('No PID file');
+   }
+   return;
+}
+
+sub make_PID_file {
+   my ( $self ) = @_;
+   if ( exists $self->{child} ) {
+      die "Do not call Daemon::make_PID_file() for daemonized scripts";
+   }
+   $self->_make_PID_file();
+   $self->{PID_owner} = $PID;
+   return;
+}
+
+sub _make_PID_file {
+   my ( $self ) = @_;
+
+   my $PID_file = $self->{PID_file};
+   if ( !$PID_file ) {
+      MKDEBUG && _d('No PID file to create');
+      return;
+   }
+
+   $self->check_PID_file();
+
+   open my $PID_FH, '>', $PID_file
+      or die "Cannot open PID file $PID_file: $OS_ERROR";
+   print $PID_FH $PID
+      or die "Cannot print to PID file $PID_file: $OS_ERROR";
+   close $PID_FH
+      or die "Cannot close PID file $PID_file: $OS_ERROR";
+
+   MKDEBUG && _d('Created PID file:', $self->{PID_file});
+   return;
+}
+
+sub _remove_PID_file {
+   my ( $self ) = @_;
+   if ( $self->{PID_file} && -f $self->{PID_file} ) {
+      unlink $self->{PID_file}
+         or warn "Cannot remove PID file $self->{PID_file}: $OS_ERROR";
+      MKDEBUG && _d('Removed PID file');
+   }
+   else {
+      MKDEBUG && _d('No PID to remove');
+   }
+   return;
+}
+
+sub DESTROY {
+   my ( $self ) = @_;
+
+   $self->_remove_PID_file() if ($self->{PID_owner} || 0) == $PID;
+
+   return;
 }
 
 sub _d {
@@ -2971,7 +4159,439 @@ sub _d {
 1;
 
 # ###########################################################################
-# End SQLParser package
+# End Daemon package
+# ###########################################################################
+
+# ###########################################################################
+# Runtime package 7221
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Runtime.pm
+#   trunk/common/t/Runtime.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Runtime;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(now);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   if ( ($args{runtime} || 0) < 0 ) {
+      die "runtime argument must be greater than zero"
+   }
+
+   my $self = {
+      %args,
+      start_time => undef,
+      end_time   => undef,
+      time_left  => undef,
+      stop       => 0,
+   };
+
+   return bless $self, $class;
+}
+
+sub time_left {
+   my ( $self, %args ) = @_;
+
+   if ( $self->{stop} ) {
+      MKDEBUG && _d("No time left because stop was called");
+      return 0;
+   }
+
+   my $now = $self->{now}->(%args);
+   MKDEBUG && _d("Current time:", $now);
+
+   if ( !defined $self->{start_time} ) {
+      $self->{start_time} = $now;
+   }
+
+   return unless defined $now;
+
+   my $runtime = $self->{runtime};
+   return unless defined $runtime;
+
+   if ( !$self->{end_time} ) {
+      $self->{end_time} = $now + $runtime;
+      MKDEBUG && _d("End time:", $self->{end_time});
+   }
+
+   $self->{time_left} = $self->{end_time} - $now;
+   MKDEBUG && _d("Time left:", $self->{time_left});
+   return $self->{time_left};
+}
+
+sub have_time {
+   my ( $self, %args ) = @_;
+   my $time_left = $self->time_left(%args);
+   return 1 if !defined $time_left;  # run forever
+   return $time_left <= 0 ? 0 : 1;   # <=0s means runtime has elapsed
+}
+
+sub time_elapsed {
+   my ( $self, %args ) = @_;
+
+   my $start_time = $self->{start_time};
+   return 0 unless $start_time;
+
+   my $now = $self->{now}->(%args);
+   MKDEBUG && _d("Current time:", $now);
+
+   my $time_elapsed = $now - $start_time;
+   MKDEBUG && _d("Time elapsed:", $time_elapsed);
+   if ( $time_elapsed < 0 ) {
+      warn "Current time $now is earlier than start time $start_time";
+   }
+   return $time_elapsed;
+}
+
+sub reset {
+   my ( $self ) = @_;
+   $self->{start_time} = undef;
+   $self->{end_time}   = undef;
+   $self->{time_left}  = undef;
+   $self->{stop}       = 0;
+   MKDEBUG && _d("Reset runtime");
+   return;
+}
+
+sub stop {
+   my ( $self ) = @_;
+   $self->{stop} = 1;
+   return;
+}
+
+sub start {
+   my ( $self ) = @_;
+   $self->{stop} = 0;
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Runtime package
+# ###########################################################################
+
+# ###########################################################################
+# Progress package 7096
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Progress.pm
+#   trunk/common/t/Progress.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package Progress;
+
+use strict;
+use warnings FATAL => 'all';
+
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   foreach my $arg (qw(jobsize)) {
+      die "I need a $arg argument" unless defined $args{$arg};
+   }
+   if ( (!$args{report} || !$args{interval}) ) {
+      if ( $args{spec} && @{$args{spec}} == 2 ) {
+         @args{qw(report interval)} = @{$args{spec}};
+      }
+      else {
+         die "I need either report and interval arguments, or a spec";
+      }
+   }
+
+   my $name  = $args{name} || "Progress";
+   $args{start} ||= time();
+   my $self;
+   $self = {
+      last_reported => $args{start},
+      fraction      => 0,       # How complete the job is
+      callback      => sub {
+         my ($fraction, $elapsed, $remaining, $eta) = @_;
+         printf STDERR "$name: %3d%% %s remain\n",
+            $fraction * 100,
+            Transformers::secs_to_time($remaining),
+            Transformers::ts($eta);
+      },
+      %args,
+   };
+   return bless $self, $class;
+}
+
+sub validate_spec {
+   shift @_ if $_[0] eq 'Progress'; # Permit calling as Progress-> or Progress::
+   my ( $spec ) = @_;
+   if ( @$spec != 2 ) {
+      die "spec array requires a two-part argument\n";
+   }
+   if ( $spec->[0] !~ m/^(?:percentage|time|iterations)$/ ) {
+      die "spec array's first element must be one of "
+        . "percentage,time,iterations\n";
+   }
+   if ( $spec->[1] !~ m/^\d+$/ ) {
+      die "spec array's second element must be an integer\n";
+   }
+}
+
+sub set_callback {
+   my ( $self, $callback ) = @_;
+   $self->{callback} = $callback;
+}
+
+sub start {
+   my ( $self, $start ) = @_;
+   $self->{start} = $self->{last_reported} = $start || time();
+}
+
+sub update {
+   my ( $self, $callback, $now ) = @_;
+   my $jobsize   = $self->{jobsize};
+   $now        ||= time();
+   $self->{iterations}++; # How many updates have happened;
+
+   if ( $self->{report} eq 'time'
+         && $self->{interval} > $now - $self->{last_reported}
+   ) {
+      return;
+   }
+   elsif ( $self->{report} eq 'iterations'
+         && ($self->{iterations} - 1) % $self->{interval} > 0
+   ) {
+      return;
+   }
+   $self->{last_reported} = $now;
+
+   my $completed = $callback->();
+   $self->{updates}++; # How many times we have run the update callback
+
+   return if $completed > $jobsize;
+
+   my $fraction = $completed > 0 ? $completed / $jobsize : 0;
+
+   if ( $self->{report} eq 'percentage'
+         && $self->fraction_modulo($self->{fraction})
+            >= $self->fraction_modulo($fraction)
+   ) {
+      $self->{fraction} = $fraction;
+      return;
+   }
+   $self->{fraction} = $fraction;
+
+   my $elapsed   = $now - $self->{start};
+   my $remaining = 0;
+   my $eta       = $now;
+   if ( $completed > 0 && $completed <= $jobsize && $elapsed > 0 ) {
+      my $rate = $completed / $elapsed;
+      if ( $rate > 0 ) {
+         $remaining = ($jobsize - $completed) / $rate;
+         $eta       = $now + int($remaining);
+      }
+   }
+   $self->{callback}->($fraction, $elapsed, $remaining, $eta, $completed);
+}
+
+sub fraction_modulo {
+   my ( $self, $num ) = @_;
+   $num *= 100; # Convert from fraction to percentage
+   return sprintf('%d',
+      sprintf('%d', $num / $self->{interval}) * $self->{interval});
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Progress package
+# ###########################################################################
+
+# ###########################################################################
+# Pipeline package 7268
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Pipeline.pm
+#   trunk/common/t/Pipeline.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Pipeline;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+use Time::HiRes qw(time);
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless defined $args{$arg};
+   }
+
+   my $self = {
+      instrument        => 0,
+      continue_on_error => 0,
+
+      %args,
+
+      procs           => [],  # coderefs for pipeline processes
+      names           => [],  # names for each ^ pipeline proc
+      instrumentation => {    # keyed on proc index in procs
+         Pipeline => {
+            time  => 0,
+            calls => 0,
+         },
+      },
+   };
+   return bless $self, $class;
+}
+
+sub add {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(process name);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless defined $args{$arg};
+   }
+   my ($process, $name) = @args{@required_args};
+
+   push @{$self->{procs}}, $process;
+   push @{$self->{names}}, $name;
+   if ( $self->{instrument} ) {
+      $self->{instrumentation}->{$name} = { time => 0, calls => 0 };
+   }
+   MKDEBUG && _d("Added pipeline process", $name);
+
+   return;
+}
+
+sub processes {
+   my ( $self ) = @_;
+   return @{$self->{names}};
+}
+
+sub execute {
+   my ( $self, %args ) = @_;
+
+   die "Cannot execute pipeline because no process have been added"
+      unless scalar @{$self->{procs}};
+
+   my $oktorun = $args{oktorun};
+   die "I need an oktorun argument" unless $oktorun;
+   die '$oktorun argument must be a reference' unless ref $oktorun;
+
+   my $pipeline_data = $args{pipeline_data} || {};
+   $pipeline_data->{oktorun} = $oktorun;
+
+   MKDEBUG && _d("Pipeline starting at", time);
+   my $instrument = $self->{instrument};
+   my $processes  = $self->{procs};
+   EVENT:
+   while ( $$oktorun ) {
+      my $procno  = 0;  # so we can see which proc if one causes an error
+      my $output;
+      eval {
+         PIPELINE_PROCESS:
+         while ( $procno < scalar @{$self->{procs}} ) {
+            my $call_start = $instrument ? time : 0;
+
+            MKDEBUG && _d("Pipeline process", $self->{names}->[$procno]);
+            $output = $processes->[$procno]->($pipeline_data);
+
+            if ( $instrument ) {
+               my $call_end = time;
+               my $call_t   = $call_end - $call_start;
+               $self->{instrumentation}->{$self->{names}->[$procno]}->{time} += $call_t;
+               $self->{instrumentation}->{$self->{names}->[$procno]}->{count}++;
+               $self->{instrumentation}->{Pipeline}->{time} += $call_t;
+               $self->{instrumentation}->{Pipeline}->{count}++;
+            }
+            if ( !$output ) {
+               MKDEBUG && _d("Pipeline restarting early after",
+                  $self->{names}->[$procno]);
+               last PIPELINE_PROCESS;
+            }
+            $procno++;
+         }
+      };
+      if ( $EVAL_ERROR ) {
+         warn "Pipeline process $procno ("
+            . ($self->{names}->[$procno] || "")
+            . ") caused an error: $EVAL_ERROR";
+         die $EVAL_ERROR unless $self->{continue_on_error};
+      }
+   }
+
+   MKDEBUG && _d("Pipeline stopped at", time);
+   return;
+}
+
+sub instrumentation {
+   my ( $self ) = @_;
+   return $self->{instrumentation};
+}
+
+sub reset {
+   my ( $self ) = @_;
+   foreach my $proc_name ( @{$self->{names}} ) {
+      if ( exists $self->{instrumentation}->{$proc_name} ) {
+         $self->{instrumentation}->{$proc_name}->{calls} = 0;
+         $self->{instrumentation}->{$proc_name}->{time}  = 0;
+      }
+   }
+   $self->{instrumentation}->{Pipeline}->{calls} = 0;
+   $self->{instrumentation}->{Pipeline}->{time}  = 0;
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End Pipeline package
 # ###########################################################################
 
 # ###########################################################################
@@ -2986,7 +4606,7 @@ package mk_table_usage;
 
 use English qw(-no_match_vars);
 
-use constant MKDEBUG => $ENV{MKDEBUG};
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 use sigtrap 'handler', \&sig_int, 'normal-signals';
 
@@ -2994,7 +4614,8 @@ use sigtrap 'handler', \&sig_int, 'normal-signals';
 my $oktorun = 1;
 
 sub main {
-   @ARGV = @_;  # set global ARGV for this package
+   @ARGV    = @_;  # set global ARGV for this package
+   $oktorun = 1;   # reset between tests else pipeline won't run
 
    # ########################################################################
    # Get configuration information.
@@ -3003,198 +4624,413 @@ sub main {
    $o->get_specs();
    $o->get_opts();
 
+   my $dp = $o->DSNParser();
+   $dp->prop('set-vars', $o->get('set-vars'));
+
    $o->usage_or_errors();
+
+   # ########################################################################
+   # Connect to MySQl for --explain-extended.
+   # ########################################################################
+   my $explain_ext_dbh;
+   if ( my $dsn = $o->get('explain-extended') ) {
+      $explain_ext_dbh = get_cxn(
+         dsn          => $dsn,
+         OptionParser => $o,
+         DSNParser    => $dp,
+      );
+   }
 
    # ########################################################################
    # Make common modules.
    # ########################################################################
-   my $q  = new Quoter();
    my $qp = new QueryParser();
-   my $qr = new QueryRewriter(QueryParser=>$qp);
    my $sp = new SQLParser();
+   my $tu = new TableUsage(QueryParser => $qp, SQLParser => $sp);
+   my %common_modules = (
+      OptionParser => $o,
+      DSNParser    => $dp,
+   );
 
    # ########################################################################
    # Set up an array of callbacks.
    # ########################################################################
-   my @callbacks;
-
-   # Read an event (query/statement) from the input.
-   my $parser = new SlowLogParser();
-   push @callbacks, sub {
-      my ( $event, %args ) = @_;
-      MKDEBUG && _d('callback: parse log file');
-      return $parser->parse_event(%args);
+   my $pipeline_data = {
+      # Add here any data to inject into the pipeline.
+      # This hashref is $args in each pipeline process.
    };
+   my $pipeline = new Pipeline(
+      instrument        => 0,
+      continue_on_error => $o->get('continue-on-error'),
+   );
 
-   # Split the statement into its sub-statements.
-   push @callbacks, sub {
-      my ( $event ) = @_;
-      MKDEBUG && _d('callback: split query');
-      my $arg = $qr->strip_comments($event->{arg});
-      return unless defined $arg;
-      $event->{statements}  = [ $qp->split($arg) ];
-      return $event;
-   };
+   { # prep
+      $pipeline->add(
+         name    => 'prep',
+         process => sub {
+            my ( $args ) = @_;
+            # Stuff you'd like to do to make sure pipeline data is prepped
+            # and ready to go...
 
-   # For each (sub)statement, get its tables then determine if the
-   # table is read (SELECT) or written to (anything not-SELECT).
-   push @callbacks, sub {
-      my ( $event ) = @_;
-      MKDEBUG && _d('callback: get tables');
-      my $statements = $event->{statements};
-      return unless $statements;
+            $args->{event} = undef;  # remove event from previous pass
 
-      print "# Query_id: " . ($event->{Query_id} || "0") . "\n";
+            return $args;
+         },
+      );
+   } # prep
 
-      foreach my $stmt ( @$statements ) {
-         my $rw      = $stmt =~ m/^\s*SELECT\b/i ? 'r' : 'w';
-         my @tables = $qp->get_tables($stmt);
-         if ( !@tables ) {
-            # This happens with statements that QueryParser::get_tables()
-            # doesn't know how to parse, like CREATE TABLE.
-            print "? Cannot get tables\n";
-         }
-         elsif ( $rw eq 'r' || @tables == 1 ) {
-            foreach my $db_tbl ( @tables ) {
-               my ($db, $tbl) = $q->split_unquote($db_tbl, $event->{Schema});
-               MKDEBUG && _d('Query_id:', $event->{Query_id}, 'rw:', $rw,
-                  'db:', $db, 'tbl:', $tbl);
-               print "$rw " . ($db ? "$db.$tbl" : $tbl) . "\n";
-            }
-         }
-         else  {
-            # It's a write query with multiple tables.  We'll need to
-            # parser it further to determine which tables are r or w.
-            # This is for queries like,
-            #   UPDATE t1 AS a JOIN t2 AS b USING (id) SET a.foo="bar"
-            # or,
-            #   UPDATE t1 AS a JOIN t2 AS b USING (id) SET a.foo="bar",
-            #     b.foo="baz"
-            # That that ^ case, two tables are written to.  In the first
-            # case, t1 is written to and t2 is read.
-            eval {
-               my $sql = $sp->parse($stmt);
-               if ( $sql ) {
-                  my $sets = $sql->{set};
+   { # input
+      my $fi        = new FileIterator();
+      my $next_file = $fi->get_file_itr(@ARGV);
+      my $input_fh; # the current input fh
+      my $pr;       # Progress obj for ^
 
-                  # TODO: Handle multi-table DELETEs so we won't die here.
-                  # For now, --continue-on-error will keep us going.
-                  die "Non-SELECT statement with multiple tables "
-                     . "but no SET clause" unless $sets;
+      $pipeline->add(
+         name    => 'input',
+         process => sub {
+            my ( $args ) = @_;
+            # Only get the next file when there's no fh or no more events in
+            # the current fh.  This allows us to do collect-and-report cycles
+            # (i.e. iterations) on huge files.  This doesn't apply to infinite
+            # inputs because they don't set more_events false.
+            if ( !$args->{input_fh} || !$args->{more_events} ) {
+               if ( $args->{input_fh} ) {
+                  close $args->{input_fh}
+                     or die "Cannot close input fh: $OS_ERROR";
+               }
+               my ($fh, $filename, $filesize) = $next_file->();
+               if ( $fh ) {
+                  MKDEBUG && _d('Reading', $filename);
 
-                  # If a tbl appears in the SET, then it's being written to.
-                  # Often times tables are aliased, so we need to look for
-                  # alias and real name.
-                  DB_TBL:
-                  foreach my $db_tbl ( @tables ) {
-                     my ($db, $tbl) = $q->split_unquote(
-                        $db_tbl, $event->{Schema});
+                  # Create callback to read next event.  Some inputs, like
+                  # Processlist, may use something else but most next_event.
+                  if ( my $read_time = $o->get('read-timeout') ) {
+                     $args->{next_event}
+                        = sub { return read_timeout($fh, $read_time); };
+                  }
+                  else {
+                     $args->{next_event} = sub { return <$fh>; };
+                  }
+                  $args->{input_fh}    = $fh;
+                  $args->{tell}        = sub { return tell $fh; };
+                  $args->{more_events} = 1;
 
-                     my $alias = "";
-                     foreach my $sql_tbl ( @{$sql->{tables}} ) {
-                        if ( $sql_tbl->{name} eq $tbl ) {
-                           $alias = $sql_tbl->{alias} || "";
-                           last;
-                        }
-                     }
-                     MKDEBUG && _d("Table", $tbl, "alias:", $alias);
-
-                     foreach my $set ( @$sets ) {
-                        if ( $set->{table} eq $tbl || $set->{table} eq $alias ){
-                           print "w " . ($db ? "$db.$tbl" : $tbl) . "\n";
-                           next DB_TBL;
-                        }
-                     }
-                     print "r " . ($db ? "$db.$tbl" : $tbl) . "\n";
+                  # Make a progress reporter, one per file.
+                  if ( $o->get('progress') && $filename && -e $filename ) {
+                     $pr = new Progress(
+                        jobsize => $filesize,
+                        spec    => $o->get('progress'),
+                        name    => $filename,
+                     );
                   }
                }
                else {
-                  print "? Cannot parse SQL statment\n";
+                  MKDEBUG && _d("No more input");
+                  # This will cause terminator proc to terminate the pipeline.
+                  $args->{input_fh}    = undef;
+                  $args->{more_events} = 0;
                }
-            };
-            if ( $EVAL_ERROR ) {
-               my $err = chomp $EVAL_ERROR;
-               print "? Error parsing SQL statment: $EVAL_ERROR\n";
             }
+            $pr->update($args->{tell}) if $pr;
+            return $args;
+         },
+      );
+   } # input
+
+   { # event
+      # Only slowlogs are supported, but if we want parse other formats,
+      # just tweak the code below to be like mk-query-digest.
+      my %alias_for = (
+         slowlog   => ['SlowLogParser'],
+         # binlog    => ['BinaryLogParser'],
+         # genlog    => ['GeneralLogParser'],
+         # tcpdump   => ['TcpdumpParser','MySQLProtocolParser'],
+      );
+      my $type = ['slowlog'];
+      $type    = $alias_for{$type->[0]} if $alias_for{$type->[0]};
+
+      foreach my $module ( @$type ) {
+         my $parser;
+         eval {
+            $parser = $module->new(
+               o => $o,
+            );
+         };
+         if ( $EVAL_ERROR ) {
+            die "Failed to load $module module: $EVAL_ERROR";
          }
+         
+         $pipeline->add(
+            name    => ref $parser,
+            process => sub {
+               my ( $args ) = @_;
+               if ( $args->{input_fh} ) {
+                  my $event = $parser->parse_event(
+                     event       => $args->{event},
+                     next_event  => $args->{next_event},
+                     tell        => $args->{tell},
+                     oktorun     => sub { $args->{more_events} = $_[0]; },
+                  );
+                  if ( $event ) {
+                     $args->{event} = $event;
+                     return $args;
+                  }
+                  MKDEBUG && _d("No more events, input EOF");
+                  return;  # next input
+               }
+               # No input, let pipeline run so the last report is printed.
+               return $args;
+            },
+         );
       }
-      
-      return $event;
-   };
+   } # event
+
+   { # terminator
+      my $runtime = new Runtime(
+         now     => sub { return time },
+         runtime => $o->get('run-time'),
+      );
+
+      $pipeline->add(
+         name    => 'terminator',
+         process => sub {
+            my ( $args ) = @_;
+
+            # Stop running if there's no more input.
+            if ( !$args->{input_fh} ) {
+               MKDEBUG && _d("No more input, terminating pipeline");
+
+               # This shouldn't happen, but I want to know if it does.
+               warn "There's an event in the pipeline but no current input: "
+                     . Dumper($args)
+                  if $args->{event};
+
+               $oktorun = 0;  # 2. terminate pipeline
+               return;        # 1. exit pipeline early
+            }
+
+            # Stop running if --run-time has elapsed.
+            if ( !$runtime->have_time() ) {
+               MKDEBUG && _d("No more time, terminating pipeline");
+               $oktorun = 0;  # 2. terminate pipeline
+               return;        # 1. exit pipeline early
+            }
+
+            # There's input and time left so keep runnning...
+            if ( $args->{event} ) {
+               MKDEBUG && _d("Event in pipeline, continuing");
+               return $args;
+            }
+            else {
+               MKDEBUG && _d("No event in pipeline, get next event");
+               return;
+            }
+         },
+      );
+   } # terminator
+
+   # ########################################################################
+   # All pipeline processes after the terminator expect an event
+   # (i.e. that $args->{event} exists and is a valid event).
+   # ########################################################################
+
+   if ( $o->get('filter') ) { # filter
+      my $filter = $o->get('filter');
+      if ( -f $filter && -r $filter ) {
+         MKDEBUG && _d('Reading file', $filter, 'for --filter code');
+         open my $fh, "<", $filter or die "Cannot open $filter: $OS_ERROR";
+         $filter = do { local $/ = undef; <$fh> };
+         close $fh;
+      }
+      else {
+         $filter = "( $filter )";  # issue 565
+      }
+      my $code = 'sub { my ( $args ) = @_; my $event = $args->{event}; '
+               . "$filter && return \$args; };";
+      MKDEBUG && _d('--filter code:', $code);
+      my $sub = eval $code
+         or die "Error compiling --filter code: $code\n$EVAL_ERROR";
+
+      $pipeline->add(
+         name    => 'filter',
+         process => $sub,
+      );
+   } # filter
+
+   if ( $explain_ext_dbh ) { # explain extended
+      $pipeline->add(
+         name    => 'explain extended',
+         process => sub {
+            my ( $args ) = @_;
+            my $query = $args->{event}->{arg};
+            return unless $query;
+            my $qualified_query = qualify_query(
+               query => $query,
+               dbh   => $explain_ext_dbh,
+            );
+            $args->{event}->{original_arg} = $query;
+            $args->{event}->{arg}          = $qualified_query;
+            return $args;
+         },
+      );
+   } # explain extended
+
+   { # table usage
+      my $default_db = $o->get('database');
+      my $id_attrib  = $o->get('id-attribute');
+      my $queryno    = 1;
+
+      $pipeline->add(
+         name    => 'table usage',
+         process => sub {
+            my ( $args ) = @_;
+
+            my $event = $args->{event};
+            if ( $id_attrib
+                 && (!exists $event->{$id_attrib}
+                   || !defined $event->{$id_attrib}) ) {
+               MKDEBUG && _d("Event", $id_attrib, "attrib doesn't exist",
+                  "or isn't defined, skipping");
+               return;
+            }
+
+            my $query = $event->{arg};
+            return unless $query;
+            my $table_usage = $tu->get_table_usage(
+               query      => $query,
+               default_db => $event->{db} || $default_db,
+            );
+
+            # TODO: I think this will happen for SELECT NOW(); i.e. not
+            # sure what TableUsage returns for such queries.
+            if ( !$table_usage || @$table_usage == 0 ) {
+               MKDEBUG && _d("Query does not use any tables");
+               return;
+            }
+
+            report_table_usage(
+               table_usage => $table_usage,
+               query_id    => $id_attrib ? $event->{$id_attrib} : $queryno++,
+               %common_modules,
+            ); 
+
+            return $args;
+         },
+      );
+   } # table usage
+
+   # ########################################################################
+   # Daemonize now that everything is setup and ready to work.
+   # ########################################################################
+   my $daemon;
+   if ( $o->get('daemonize') ) {
+      $daemon = new Daemon(o=>$o);
+      $daemon->daemonize();
+      MKDEBUG && _d('I am a daemon now');
+   }
+   elsif ( $o->get('pid') ) {
+      # We're not daemoninzing, it just handles PID stuff.
+      $daemon = new Daemon(o=>$o);
+      $daemon->make_PID_file();
+   }
 
    # ########################################################################
    # Parse the input.
    # ########################################################################
-   my $fi        = new FileIterator();
-   my $next_file = $fi->get_file_itr(@ARGV);
-   my @read_files;
-   my ($fh, $filename, $filesize) = $next_file->();
-   MKDEBUG && _d('Reading', $filename);
-   push @read_files, $filename || "STDIN" if $fh;
 
-   my $start = time();
-   my $end   = $start + ($o->get('run-time') || 0); # When we should exit
-   my $now   = $start;
-   INPUT:
-   while ( 
-      $oktorun
-      && ($start == $end || $now < $end)
-      && defined $fh
-   ) {
-      # Create callback to read next event.  Some inputs, like
-      # Processlist, may use something else but most next_event.
-      my $next_event = sub { return <$fh>; };
-      my $tell       = sub { return tell $fh; };
+   # Pump the pipeline until either no more input, or we're interrupted by
+   # CTRL-C, or--this shouldn't happen--the pipeline causes an error.  All
+   # work happens inside the pipeline via the procs we created above.
+   my $exit_status = 0;
+   eval {
+      $pipeline->execute(
+         oktorun       => \$oktorun,
+         pipeline_data => $pipeline_data,
+      );
+   };
+   if ( $EVAL_ERROR ) {
+      warn "The pipeline caused an error: $EVAL_ERROR";
+      $exit_status = 1;
+   }
+   MKDEBUG && _d("Pipeline data:", Dumper($pipeline_data));
 
-      # Parse and process the events in this input.
-      my $event       = {};
-      my $more_events = 1;
-      my $oktorun_sub = sub { $more_events = $_[0]; };
-      EVENT:
-      while (
-         $oktorun
-         && ($start == $end || $now < $end)
-         && $more_events
-      ) {
-         eval {
-            PIPELINE_PROCESS:
-            foreach my $callback ( @callbacks ) {
-               last unless $oktorun;  # the global oktorun var
-               $event = $callback->(
-                  $event,                # for backwards compatibility
-                  event      => $event,  # new interface
-                  next_event => $next_event,
-                  tell       => $tell,
-                  oktorun    => $oktorun_sub,
-               );
-               last PIPELINE_PROCESS unless $event;
-            }
-            if ( !$more_events ) {
-               MKDEBUG && _d('No more events');
-               close $fh if $fh;
-               $fh = undef; 
-               ($fh, $filename, $filesize) = $next_file->();
-               MKDEBUG && _d('Reading', $filename);
-               if ( $fh ) {
-                  push @read_files, $filename || "STDIN";
-                  $more_events = 1 if $fh;  # more events if more input
-               }
-            }
-         };
-         if ( $EVAL_ERROR ) {
-            _d($EVAL_ERROR);
-            last INPUT unless $o->get('continue-on-error');
-         }
-         $now = time;
-      }  # EVENT
-   } # INPUT
-
-   return 0;
+   return $exit_status;
 } # End main().
 
 # ###########################################################################
 # Subroutines.
 # ###########################################################################
+sub report_table_usage {
+   my ( %args ) = @_;
+   my @required_args = qw(table_usage query_id);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($table_usage, $query_id) = @args{@required_args};
+   MKDEBUG && _d("Reporting table usage");
+
+   my $tableno = 1;
+   TABLE:
+   foreach my $table ( @$table_usage ) {
+      print "Query_id: $query_id.$tableno\n";
+
+      USAGE:
+      foreach my $usage ( @$table ) {
+         die "Invalid table usage: " . Dumper($usage)
+            unless $usage->{context} && $usage->{table};
+
+         print "$usage->{context} $usage->{table}\n";
+      }
+      print "\n";
+   }
+
+   return;
+}
+
+sub qualify_query {
+   my ( %args ) = @_;
+   my @required_args = qw(query dbh);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($query, $dbh) = @args{@required_args};
+
+   my $sql = "EXPLAIN EXTENDED $query";
+   MKDEBUG && _d($dbh, $sql);
+   $dbh->do($sql);  # don't need the result
+
+   $sql = "SHOW WARNINGS";
+   MKDEBUG && _d($dbh, $sql);
+   my $warning = $dbh->selectrow_hashref($sql);
+   if (    ($warning->{level} || "") !~ m/Note/i
+        || ($warning->{code}  || 0)  != 1003 ) {
+      die "EXPLAIN EXTENDED failed:\n"
+         . "  Level: " . ($warning->{level}   || "") . "\n"
+         . "   Code: " . ($warning->{code}    || "") . "\n"
+         . "Message: " . ($warning->{message} || "") . "\n";
+   }
+
+   return $warning->{message};
+}
+
+sub get_cxn {
+   my ( %args ) = @_;
+   my @required_args = qw(dsn OptionParser DSNParser);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dsn, $o, $dp) = @args{@required_args};
+
+   if ( $o->get('ask-pass') ) {
+      $dsn->{p} = OptionParser::prompt_noecho("Enter password "
+         . ($args{for} ? "for $args{for}: " : ": "));
+   }
+
+   my $dbh = $dp->get_dbh($dp->get_cxn_params($dsn), $args{opts});
+   $dbh->{FetchHashKeyName} = 'NAME_lc';
+   return $dbh;
+}
+
 sub sig_int {
    my ( $signal ) = @_;
    if ( $oktorun ) {
@@ -3257,6 +5093,20 @@ L<"SYNOPSIS"> and usage information for details.
 
 =over
 
+=item --ask-pass
+
+Prompt for a password when connecting to MySQL.
+
+=item --charset
+
+short form: -A; type: string
+
+Default character set.  If the value is utf8, sets Perl's binmode on
+STDOUT to utf8, passes the mysql_enable_utf8 option to DBD::mysql, and
+runs SET NAMES UTF8 after connecting to MySQL.  Any other value sets
+binmode on STDOUT without the utf8 layer, and runs SET NAMES after
+connecting to MySQL.
+
 =item --config
 
 type: Array
@@ -3270,9 +5120,186 @@ default: yes
 
 Continue parsing even if there is an error.
 
+=item --daemonize
+
+Fork to the background and detach from the shell.  POSIX
+operating systems only.
+
+=item --database
+
+short form: -D; type: string
+
+Default database.
+
+=item --defaults-file
+
+short form: -F; type: string
+
+Only read mysql options from the given file.  You must give an absolute pathname.
+
+=item --explain-extended
+
+type: DSN
+
+EXPLAIN EXTENDED queries on this host to fully qualify table and column names.
+
+=item --filter
+
+type: string
+
+Discard events for which this Perl code doesn't return true.
+
+This option is a string of Perl code or a file containing Perl code that gets
+compiled into a subroutine with one argument: $event.  This is a hashref.
+If the given value is a readable file, then mk-query-digest reads the entire
+file and uses its contents as the code.  The file should not contain
+a shebang (#!/usr/bin/perl) line.
+
+If the code returns true, the chain of callbacks continues; otherwise it ends.
+The code is the last statement in the subroutine other than C<return $event>. 
+The subroutine template is:
+
+  sub { $event = shift; filter && return $event; }
+
+Filters given on the command line are wrapped inside parentheses like like
+C<( filter )>.  For complex, multi-line filters, you must put the code inside
+a file so it will not be wrapped inside parentheses.  Either way, the filter
+must produce syntactically valid code given the template.  For example, an
+if-else branch given on the command line would not be valid:
+
+  --filter 'if () { } else { }'  # WRONG
+
+Since it's given on the command line, the if-else branch would be wrapped inside
+parentheses which is not syntactically valid.  So to accomplish something more
+complex like this would require putting the code in a file, for example
+filter.txt:
+
+  my $event_ok; if (...) { $event_ok=1; } else { $event_ok=0; } $event_ok
+
+Then specify C<--filter filter.txt> to read the code from filter.txt.
+
+If the filter code won't compile, mk-query-digest will die with an error.
+If the filter code does compile, an error may still occur at runtime if the
+code tries to do something wrong (like pattern match an undefined value).
+mk-query-digest does not provide any safeguards so code carefully!
+
+An example filter that discards everything but SELECT statements:
+
+  --filter '$event->{arg} =~ m/^select/i'
+
+This is compiled into a subroutine like the following:
+
+  sub { $event = shift; ( $event->{arg} =~ m/^select/i ) && return $event; }
+
+It is permissible for the code to have side effects (to alter C<$event>).
+
+You can find an explanation of the structure of $event at
+L<http://code.google.com/p/maatkit/wiki/EventAttributes>.
+
+Here are more examples of filter code:
+
+=over
+
+=item Host/IP matches domain.com
+
+--filter '($event->{host} || $event->{ip} || "") =~ m/domain.com/'
+
+Sometimes MySQL logs the host where the IP is expected.  Therefore, we
+check both.
+
+=item User matches john
+
+--filter '($event->{user} || "") =~ m/john/'
+
+=item More than 1 warning
+
+--filter '($event->{Warning_count} || 0) > 1'
+
+=item Query does full table scan or full join
+
+--filter '(($event->{Full_scan} || "") eq "Yes") || (($event->{Full_join} || "") eq "Yes")'
+
+=item Query was not served from query cache
+
+--filter '($event->{QC_Hit} || "") eq "No"'
+
+=item Query is 1 MB or larger
+
+--filter '$event->{bytes} >= 1_048_576'
+
+=back
+
+Since L<"--filter"> allows you to alter C<$event>, you can use it to do other
+things, like create new attributes.  See L<"ATTRIBUTES"> for an example.
+
+
 =item --help
 
 Show help and exit.
+
+=item --host
+
+short form: -h; type: string
+
+Connect to host.
+
+=item --id-attribute
+
+type: string
+
+Identify each event using this attribute.  If not ID attribute is given, then
+events are identified by an auto-incrementing integer.
+
+=item --log
+
+type: string
+
+Print all output to this file when daemonized.
+
+=item --password
+
+short form: -p; type: string
+
+Password to use when connecting.
+
+=item --pid
+
+type: string
+
+Create the given PID file when running.  The file contains the process
+ID of the daemonized instance.  The PID file is removed when the
+daemonized instance exits.  The program checks for the existence of the
+PID file when starting; if it exists and the process with the matching PID
+exists, the program exits.
+
+=item --port
+
+short form: -P; type: int
+
+Port number to use for connection.
+
+=item --progress
+
+type: array; default: time,30
+
+Print progress reports to STDERR.  The value is a comma-separated list with two
+parts.  The first part can be percentage, time, or iterations; the second part
+specifies how often an update should be printed, in percentage, seconds, or
+number of iterations.
+
+=item --read-timeout
+
+type: time; default: 0
+
+Wait this long for an event from the input; 0 to wait forever.
+
+This option sets the maximum time to wait for an event from the input.  It
+applies to all types of input except L<"--processlist">.  If an
+event is not received after the specified time, the script stops reading the
+input and prints its reports.  If L<"--iterations"> is 0 or greater than
+1, the next iteration will begin, else the script will exit.
+
+This option requires the Perl POSIX module.
 
 =item --run-time
 
@@ -3281,9 +5308,88 @@ type: time
 How long to run before exiting.  The default is to run forever (you can
 interrupt with CTRL-C).
 
+=item --set-vars
+
+type: string; default: wait_timeout=10000
+
+Set these MySQL variables.  Immediately after connecting to MySQL, this
+string will be appended to SET and executed.
+
+=item --socket
+
+short form: -S; type: string
+
+Socket file to use for connection.
+
+=item --user
+
+short form: -u; type: string
+
+User for login if not current user.
+
 =item --version
 
 Show version and exit.
+
+=back
+
+=head1 DSN OPTIONS
+
+These DSN options are used to create a DSN.  Each option is given like
+C<option=value>.  The options are case-sensitive, so P and p are not the
+same option.  There cannot be whitespace before or after the C<=> and
+if the value contains whitespace it must be quoted.  DSN options are
+comma-separated.  See the L<maatkit> manpage for full details.
+
+=over
+
+=item * A
+
+dsn: charset; copy: yes
+
+Default character set.
+
+=item * D
+
+dsn: database; copy: yes
+
+Database that contains the query review table.
+
+=item * F
+
+dsn: mysql_read_default_file; copy: yes
+
+Only read default options from the given file
+
+=item * h
+
+dsn: host; copy: yes
+
+Connect to host.
+
+=item * p
+
+dsn: password; copy: yes
+
+Password to use when connecting.
+
+=item * P
+
+dsn: port; copy: yes
+
+Port number to use for connection.
+
+=item * S
+
+dsn: mysql_socket; copy: yes
+
+Socket file to use for connection.
+
+=item * u
+
+dsn: user; copy: yes
+
+User for login if not current user.
 
 =back
 
