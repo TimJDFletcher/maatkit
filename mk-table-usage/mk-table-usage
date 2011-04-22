@@ -2459,7 +2459,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7427
+# SQLParser package 7433
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -2964,7 +2964,7 @@ sub parse_where {
 
       if ( $col ) {
          $col =~ s/\s+$//;
-         $col =~ s/^\(//;  # no unquoted column name begins with (
+         $col =~ s/^\(+//;  # no unquoted column name begins with (
       }
       if ( $op ) {
          $op  =  lc $op;
@@ -2972,8 +2972,14 @@ sub parse_where {
          $op  =~ s/\s+$//;
       }
       $val =~ s/^\s+//;
-      $val =~ s/\)$// if ($op || '') !~ m/in/i && $val !~ m/^\w+\([^\)]+\)$/;
-      $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
+      
+      if ( ($op || '') !~ m/IN/i && $val !~ m/^\w+\([^\)]+\)$/ ) {
+         $val =~ s/\)+$//;
+      }
+
+      if ( $val =~ m/NULL|TRUE|FALSE/i ) {
+         $val = lc $val;
+      }
 
       push @predicates, {
          predicate => $conj,
@@ -3352,7 +3358,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7427
+# TableUsage package 7432
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3467,6 +3473,11 @@ sub _get_tables_used_from_query_struct {
                   : $query_type =~ m/UPDATE/             ? 'tables'
                   : die "Cannot find table references for $query_type queries";
    my $tables     = $query_struct->{$tbl_refs};
+
+   if ( !$tables || @$tables == 0 ) {
+      MKDEBUG && _d("Query does not use any tables");
+      return [ [ { context => $query_type, table => 'DUAL' } ] ];
+   }
 
    my $where;
    if ( $query_struct->{where} ) {
@@ -3760,9 +3771,18 @@ sub _get_tables_used_in_where {
    foreach my $cond ( @$where ) {
       MKDEBUG && _d("Condition:", Dumper($cond));
       my @tables;  # tables used in this condition
+      my $n_vals      = 0;
+      my $is_constant = 0;
       ARG:
       foreach my $arg ( qw(left_arg right_arg) ) {
+         if ( !defined $cond->{$arg} ) {
+            MKDEBUG && _d($arg, "is a constant value");
+            $is_constant = 1;
+            next ARG;
+         }
+
          if ( $sql_parser->is_identifier($cond->{$arg}) ) {
+            MKDEBUG && _d($arg, "is an identifier");
             my $ident_struct = $sql_parser->parse_identifier(
                'column',
                $cond->{$arg}
@@ -3795,20 +3815,27 @@ sub _get_tables_used_in_where {
                push @tables, $table;
             }
          }
+         else {
+            MKDEBUG && _d($arg, "is a value");
+            $n_vals++;
+         }
       }  # ARG
 
-      if ( @tables == 0 ) {
-         MKDEBUG && _d("Condition is an expression");
+      if ( $is_constant || $n_vals == 2 ) {
+         MKDEBUG && _d("Condition is a constant or two values");
          $filter_tables{'DUAL'} = undef;
       }
-      elsif ( @tables == 1 ) {
-         MKDEBUG && _d("Condition filters table", $tables[0]);
-         $filter_tables{$tables[0]} = undef;
-      }
       else {
-         MKDEBUG && _d("Condition joins tables", $tables[0], "and", $tables[1]);
-         $join_tables{$tables[0]} = undef;
-         $join_tables{$tables[1]} = undef;
+         if ( @tables == 1 ) {
+            MKDEBUG && _d("Condition filters table", $tables[0]);
+            $filter_tables{$tables[0]} = undef;
+         }
+         elsif ( @tables == 2 ) {
+            MKDEBUG && _d("Condition joins tables",
+               $tables[0], "and", $tables[1]);
+            $join_tables{$tables[0]} = undef;
+            $join_tables{$tables[1]} = undef;
+         }
       }
    }  # CONDITION
 
@@ -4605,6 +4632,7 @@ sub _d {
 package mk_table_usage;
 
 use English qw(-no_match_vars);
+use Data::Dumper;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
@@ -4864,10 +4892,17 @@ sub main {
             my ( $args ) = @_;
             my $query = $args->{event}->{arg};
             return unless $query;
-            my $qualified_query = qualify_query(
-               query => $query,
-               dbh   => $explain_ext_dbh,
-            );
+            my $qualified_query;
+            eval {
+               $qualified_query = qualify_query(
+                  query => $query,
+                  dbh   => $explain_ext_dbh,
+               );
+            };
+            if ( $EVAL_ERROR ) {
+               warn $EVAL_ERROR;
+               return;
+            }
             $args->{event}->{original_arg} = $query;
             $args->{event}->{arg}          = $qualified_query;
             return $args;
@@ -4953,6 +4988,8 @@ sub main {
       $exit_status = 1;
    }
    MKDEBUG && _d("Pipeline data:", Dumper($pipeline_data));
+
+   $explain_ext_dbh->disconnect() if $explain_ext_dbh;
 
    return $exit_status;
 } # End main().

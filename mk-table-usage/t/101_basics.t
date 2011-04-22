@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 2;
+use Test::More tests => 3;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -21,6 +21,10 @@ my @args = qw();
 my $in   = "$trunk/mk-table-usage/t/samples/in/";
 my $out  = "mk-table-usage/t/samples/out/";
 
+
+# ############################################################################
+# Basic queries that parse without problems.
+# ############################################################################
 ok(
    no_diff(
       sub { mk_table_usage::main(@args, "$in/slow001.txt") },
@@ -36,6 +40,21 @@ ok(
    ),
    'Analysis for slow002.txt (issue 1237)'
 );
+
+
+# ############################################################################
+# Queries with tables that can't be resolved.
+# ############################################################################
+
+# The tables in the WHERE can't be resolved so there's no WHERE access listed.
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, "$in/slow003.txt") },
+      "$out/slow003-001.txt",
+   ),
+   'Analysis for slow003.txt'
+);
+
 
 # #############################################################################
 # Done.
