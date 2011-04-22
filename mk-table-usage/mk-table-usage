@@ -5505,7 +5505,7 @@ This refers to:
   SET a.foo="bar", b.foo="bat"
 
 DUAL is used for any values not from tables, in this case "bar" and "bat".
-If that C<SET> clause where C<SET a.foo=b.foo> instead, then the complete
+If that C<SET> clause was C<SET a.foo=b.foo> instead, then the complete
 usage would be:
 
   Query_id: 0x1CD27577D202A339.1
@@ -5544,7 +5544,7 @@ in the FROM clause or implicitly in the WHERE clause like C<t1.id = t2.id>.
 
 The WHERE context lists tables that are used in the WHERE clause to filter
 results.  This does not include tables that are implicitly joined in the
-WHERE clause; those are listed a JOIN (see JOIN context above).  For example:
+WHERE clause; those are listed as a JOIN contexts.  For example:
 
   WHERE t1.id > 100 AND t1.id < 200 AND t2.foo IS NOT NULL
 
