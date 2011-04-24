@@ -1560,7 +1560,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SimpleTCPDumpParser package 7439
+# SimpleTCPDumpParser package 7441
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SimpleTCPDumpParser.pm
@@ -1660,6 +1660,190 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
+# TCPRequestAggregator package 7442
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TCPRequestAggregator.pm
+#   trunk/common/t/TCPRequestAggregator.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package TCPRequestAggregator;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use List::Util qw(sum);
+use Data::Dumper;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my $self = {
+      buffer             => [],
+      last_weighted_time => 0,
+      last_busy_time     => 0,
+      last_arrivals      => 0,
+      last_completions   => 0,
+      current_ts         => 0,
+      %args,
+   };
+   return bless $self, $class;
+}
+
+sub parse_event {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(next_event tell);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($next_event, $tell) = @args{@required_args};
+
+   my $pos_in_log = $tell->();
+   my $line;
+   my $buffer = $self->{buffer};
+   $self->{last_pos_in_log} ||= $pos_in_log;
+
+   EVENT:
+   while ( 1 ) {
+      my ( $id, $start, $end, $elapsed, $host_port );
+
+      my ($timestamp, $direction);
+      if ( $self->{pending} ) {
+         ( $id, $start, $end, $elapsed, $host_port ) = @{$self->{pending}};
+      }
+      elsif ( defined($line = $next_event->()) ) {
+         ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
+      }
+      if ( $host_port ) { # Test that we got a line; $id can be 0.
+         if ( @$buffer && $buffer->[0] < $start ) {
+            $direction       = 'C'; # Completion
+            $timestamp       = shift @$buffer;
+            $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+         }
+         else {
+            $direction       = 'A'; # Arrival
+            $timestamp       = $start;
+            $self->{pending} = undef;
+            @$buffer         = sort { $a <=> $b } ( @$buffer, $end );
+         }
+      }
+      elsif ( @$buffer ) {
+         $direction = 'C';
+         $timestamp = shift @$buffer;
+      }
+      else { # We hit EOF.
+         return ( $self->{t_start} < $self->{current_ts} )
+            ? $self->make_event($self->{t_start}, $self->{current_ts})
+            : ();
+      }
+
+      my $t_start = int($timestamp / $self->{interval}) * $self->{interval};
+      $self->{t_start} ||= $timestamp; # Not $t_start; that'd skew 1st interval.
+
+      if ( $t_start > $self->{t_start} ) {
+         if ( $self->{in_prg} ) {
+            $self->{busy_time}     += $t_start - $self->{current_ts};
+            $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
+         }
+
+         my $event = $self->make_event($self->{t_start}, $t_start);
+
+         $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+         $self->{current_ts}         = $t_start;
+         $self->{last_pos_in_log}    = $pos_in_log;
+
+         return $event;
+      }
+
+      else {
+         if ( $self->{in_prg} ) {
+            $self->{busy_time}     += $timestamp - $self->{current_ts};
+            $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
+         }
+         $self->{current_ts} = $timestamp;
+         if ( $direction eq 'A' ) {
+            ++$self->{in_prg};
+            ++$self->{arrivals};
+            push @{$self->{response_times}}, $elapsed;
+         }
+         else {
+            --$self->{in_prg};
+            ++$self->{completions};
+         }
+      }
+
+      $pos_in_log = $tell->();
+   } # EVENT
+
+   $args{oktorun}->(0) if $args{oktorun};
+   return;
+}
+
+sub make_event {
+   my ( $self, $t_start, $t_end ) = @_;
+
+   my $quantile_cutoff = sprintf( "%.0f", # Round to nearest int
+      scalar( @{ $self->{response_times} } ) * $self->{quantile} );
+   my @times = sort { $a <=> $b } @{ $self->{response_times} };
+   my $e_ts
+      = int( $self->{current_ts} / $self->{interval} ) * $self->{interval};
+   my $e_concurrency = sprintf( "%.6f",
+           ( $self->{weighted_time} - $self->{last_weighted_time} )
+         / ( $t_end - $t_start ) );
+   my $e_throughput = sprintf( "%.6f",
+           ( $self->{arrivals} - $self->{last_arrivals} )
+         / ( $t_end - $t_start ) );
+   my $e_arrivals = ( $self->{arrivals} - $self->{last_arrivals} );
+   my $e_completions
+      = ( $self->{completions} - $self->{last_completions} );
+   my $e_busy_time
+      = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
+   my $e_weighted_time = sprintf( "%.6f",
+      $self->{weighted_time} - $self->{last_weighted_time} );
+   my $e_sum_time
+      = sprintf( "%.6f", sum( @{ $self->{response_times} } ) );
+   my $e_quantile_time = $times[ $quantile_cutoff - 1 ];
+
+   my $event = {
+      ts            => $e_ts,
+      concurrency   => $e_concurrency,
+      throughput    => $e_throughput,
+      arrivals      => $e_arrivals,
+      completions   => $e_completions,
+      busy_time     => $e_busy_time,
+      weighted_time => $e_weighted_time,
+      sum_time      => $e_sum_time,
+      quantile_time => $e_quantile_time,
+      pos_in_log    => $self->{last_pos_in_log},
+      obs_time      => sprintf("%.6f", $t_end - $t_start),
+   };
+
+   $self->{t_start}            = $t_end;  # Not current_timestamp!
+   $self->{last_weighted_time} = $self->{weighted_time};
+   $self->{last_busy_time}     = $self->{busy_time};
+   $self->{last_arrivals}      = $self->{arrivals};
+   $self->{last_completions}   = $self->{completions};
+   $self->{response_times}     = [];
+
+   return $event;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TCPRequestAggregator package
+# ###########################################################################
+
+# ###########################################################################
 # This is a combination of modules and programs in one -- a runnable module.
 # http://www.perl.com/pub/a/2006/07/13/lightning-articles.html?page=last
 # Or, look it up in the Camel book on pages 642 and 643 in the 3rd edition.
@@ -1703,6 +1887,9 @@ sub main {
             $o->save_error("--progress $EVAL_ERROR");
          }
       }
+      if ( $o->get('type') !~ m/^(tcpdump|requests)$/ ) {
+         $o->save_error("--type must be tcpdump or requests");
+      }
    }
    $o->usage_or_errors();
 
@@ -1710,7 +1897,16 @@ sub main {
    # Set up objects and variables.
    # ########################################################################
    my $fi     = new FileIterator();
-   my $parser = new SimpleTCPDumpParser(watch => $o->get('watch-server'));
+   my $parser;
+   if ( $o->get('type') eq 'tcpdump' ) { # Default: parse tcpdump
+      $parser = new SimpleTCPDumpParser(watch => $o->get('watch-server'));
+   }
+   else {
+      $parser = new TCPRequestAggregator(
+         interval => $o->get('run-time'),
+         quantile => $o->get('quantile')
+      );
+   }
 
    # ########################################################################
    # This is the main loop over the input filenames.
@@ -1749,17 +1945,25 @@ sub main {
       }
 
       # #####################################################################
-      # This is the main loop over the events in the log.
+      # This is the main loop over the events in the input file.
       # #####################################################################
       EVENT:
       while ( $event = $get_event->() ) {
-         printf "%6d %.6f %.6f %9.6f %s:%s\n",
-            $event->{id},
-            $event->{ts},
-            $event->{end},
-            $event->{end} - $event->{ts},
-            $event->{host},
-            $event->{port};
+         if ( $o->get('type') eq 'tcpdump' ) {
+            printf "%6d %.6f %.6f %9.6f %s:%s\n",
+               $event->{id},
+               $event->{ts},
+               $event->{end},
+               $event->{end} - $event->{ts},
+               $event->{host},
+               $event->{port};
+         }
+         else {
+            printf "%s %5.2f %9.3f %5d %5d %.6f %.6f %.6f %.6f %.6f\n",
+               @{$event}{qw(
+                ts concurrency throughput arrivals completions busy_time
+                weighted_time sum_time quantile_time obs_time)};
+         }
          $pr->update($tell) if $pr;
       } # EVENT
 
@@ -1831,6 +2035,15 @@ Extract individual response times, sorted by end time:
 
  mk-tcp-model /path/to/tcp-file.txt > requests.txt
 
+Sort the result by arrival time, for input to the next step:
+
+ sort -n -k1,1 requests.txt > sorted-requests.txt
+
+Slice the result into 10-second intervals and emit throughput, concurrency, and
+response time metrics for each interval:
+
+ mk-tcp-model --type=requests --run-time=10 sorted-requests.txt > sliced.txt
+
 =head1 RISKS
 
 The following section is included to inform users about the potential risks,
@@ -1872,13 +2085,73 @@ see an inbound packet, but never see a response.  This can happen when the
 kernel drops packets, for example.  As a result, we never print a request until
 we see the response to it, which means that the output is in completion order,
 not arrival order.  This can be useful for some kinds of analysis, but others
-require processing in arrival order.
+require processing in arrival order.  Therefore, the second type of processing
+this tool can do requires that you sort the output from the first stage and
+supply it as input.
+
+The second type of processing is selected with the L<"--type"> option set to
+"requests".  In this mode, the tool reads a group of requests and aggregates
+them, then emits the aggregated metrics.
 
 =head1 OUTPUT
 
-Requests are printed out one per line, in the following format:
+In the default mode (parsing tcpdump output), requests are printed out one per
+line, in the following format:
 
  <id> <start-time> <end-time> <elapsed> <IP:port>
+
+In "--type=requests" mode, the tool prints out one line per time interval as
+defined by L<"--run-time">, with the following columns:
+
+=over
+
+=item ts
+
+The timestamp that defines the beginning of the interval.
+
+=item concurrency
+
+The average number of requests resident in the server during the interval.
+
+=item throughput
+
+The number of arrivals per second during the interval.
+
+=item arrivals
+
+The number of arrivals during the interval.
+
+=item completions
+
+The number of completions during the interval.
+
+=item busy_time
+
+The total amount of time during which there was at least one request resident in
+the server during the interval.
+
+=item weighted_time
+
+The total response time of all the requests resident in the server during the
+interval, including requests that neither arrived nor completed during the
+interval.
+
+=item sum_time
+
+The total response time of all the requests that arrived in the interval.
+
+=item quantile_time
+
+The Nth percentile response time for all the requests that arrived in the
+interval.  See also L<"--quantile">.
+
+=item obs_time
+
+The length of the observation time window.  This will usually be the same as the
+interval length, except for the first and last intervals in a file, which might
+have a shorter observation time.
+
+=back
 
 =head1 OPTIONS
 
@@ -1907,9 +2180,22 @@ parts.  The first part can be percentage, time, or iterations; the second part
 specifies how often an update should be printed, in percentage, seconds, or
 number of iterations.
 
+=item --quantile
+
+type: float
+
+The percentile for the last column when L<"--type"> is "requests" (default .99).
+
+=item --run-time
+
+type: float
+
+The size of the aggregation interval in seconds when L<"--type"> is "requests"
+(default 1).  Fractional values are permitted.
+
 =item --type
 
-type: Array
+type: string
 
 The type of input to parse (default tcpdump).  The permitted types are
 
