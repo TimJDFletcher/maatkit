@@ -9,14 +9,15 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 3;
+use Test::More tests => 5;
 
 use TCPRequestAggregator;
 use MaatkitTest;
 
-my $p = new TCPRequestAggregator(interval => '.01', quantile => '.99');
+my $p;
 
 # Check that I can parse a simple log and aggregate it into 100ths of a second
+$p = new TCPRequestAggregator(interval => '.01', quantile => '.99');
 # intervals.
 test_log_parser(
    parser => $p,
@@ -45,6 +46,28 @@ test_log_parser(
          quantile_time => '0.007201',
          obs_time      => '0.010000',
          pos_in_log    => 1296,
+      },
+   ],
+);
+
+# Check that I can parse a log whose first event is ID = 0, and whose events all
+# fit within one time interval.
+$p = new TCPRequestAggregator(interval => '.01', quantile => '.99');
+test_log_parser(
+   parser => $p,
+   file   => 'common/t/samples/simpletcp-requests002.txt',
+   result => [
+      {  ts            => '1301957863.82',
+         concurrency   => '0.353948',
+         throughput    => '1789.648311',
+         arrivals      => 17,
+         completions   => 17,
+         busy_time     => '0.002754',
+         weighted_time => '0.003362',
+         sum_time      => '0.003362',
+         quantile_time => '0.000321',
+         obs_time      => '0.009499',
+         pos_in_log    => 0,
       },
    ],
 );

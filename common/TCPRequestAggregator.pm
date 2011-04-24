@@ -81,7 +81,7 @@ sub parse_event {
          # Split the line into ID, start, end, elapsed, and host:port
          ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
       }
-      if ( $id && $host_port ) {
+      if ( $host_port ) { # Test that we got a line; $id can be 0.
          # We have a line to work on.  The next event we need to process is the
          # smaller of a) the arrival recorded in the $start of the line we just
          # read, or b) the first completion recorded in the completions buffer.
@@ -134,14 +134,9 @@ sub parse_event {
          # Reset running totals and last-time-seen stuff for next iteration,
          # then return the event.
          $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
-         $self->{t_start} = $t_start; # Not $timestamp...
-         $self->{last_weighted_time} = $self->{weighted_time};
-         $self->{last_busy_time}     = $self->{busy_time};
-         $self->{last_arrivals}      = $self->{arrivals};
-         $self->{last_completions}   = $self->{completions};
-         $self->{response_times}     = [];
          $self->{current_ts}         = $t_start;
          $self->{last_pos_in_log}    = $pos_in_log;
+
          return $event;
       }
 
@@ -217,6 +212,13 @@ sub make_event {
       pos_in_log    => $self->{last_pos_in_log},
       obs_time      => sprintf("%.6f", $t_end - $t_start),
    };
+
+   $self->{t_start}            = $t_end;  # Not current_timestamp!
+   $self->{last_weighted_time} = $self->{weighted_time};
+   $self->{last_busy_time}     = $self->{busy_time};
+   $self->{last_arrivals}      = $self->{arrivals};
+   $self->{last_completions}   = $self->{completions};
+   $self->{response_times}     = [];
 
    return $event;
 }
