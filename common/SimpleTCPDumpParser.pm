@@ -60,8 +60,6 @@ sub new {
 #     port => '58297',              # TCP port where the event came from
 #     ...                           # Other attributes
 #  };
-#
-# Returns the number of events it finds.
 sub parse_event {
    my ( $self, %args ) = @_;
    my @required_args = qw(next_event tell);

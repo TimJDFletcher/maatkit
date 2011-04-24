@@ -1,0 +1,236 @@
+# This program is copyright 2007-2010 Baron Schwartz.
+# Feedback and improvements are welcome.
+#
+# THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 2; OR the Perl Artistic License.  On UNIX and similar
+# systems, you can issue `man perlgpl' or `man perlartistic' to read these
+# licenses.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc., 59 Temple
+# Place, Suite 330, Boston, MA  02111-1307  USA.
+# ###########################################################################
+# TCPRequestAggregator package $Revision$
+# ###########################################################################
+package TCPRequestAggregator;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use List::Util qw(sum);
+use Data::Dumper;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+# Required arguments: interval, quantile
+sub new {
+   my ( $class, %args ) = @_;
+   my $self = {
+      buffer             => [],
+      last_weighted_time => 0,
+      last_busy_time     => 0,
+      last_arrivals      => 0,
+      last_completions   => 0,
+      current_ts         => 0,
+      %args,
+   };
+   return bless $self, $class;
+}
+
+# This method accepts an open filehandle and callback functions.  It reads
+# events from the filehandle and calls the callbacks with each event.  $misc is
+# some placeholder for the future and for compatibility with other query
+# sources.
+#
+# The input is the output of mk-tcp-model, like so:
+#
+#   21 1301957863.820001 1301957863.820169  0.000168 10.10.18.253:58297
+#   22 1301957863.821677 1301957863.821839  0.000162 10.10.18.253:43608
+#   23 1301957863.822890 1301957863.823074  0.000184 10.10.18.253:52726
+#   24 1301957863.822895 1301957863.823160  0.000265 10.10.18.253:58297
+#
+# Each event is a hashref of attribute => value pairs as defined in
+# mk-tcp-model's documentation.
+sub parse_event {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(next_event tell);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($next_event, $tell) = @args{@required_args};
+
+   my $pos_in_log = $tell->();
+   my $line;
+   my $buffer = $self->{buffer};
+   $self->{last_pos_in_log} ||= $pos_in_log;
+
+   EVENT:
+   while ( 1 ) {
+      my ( $id, $start, $end, $elapsed, $host_port );
+
+      my ($timestamp, $direction);
+      if ( $self->{pending} ) {
+         ( $id, $start, $end, $elapsed, $host_port ) = @{$self->{pending}};
+      }
+      elsif ( defined($line = $next_event->()) ) {
+         # Split the line into ID, start, end, elapsed, and host:port
+         ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
+      }
+      if ( $id && $host_port ) {
+         # We have a line to work on.  The next event we need to process is the
+         # smaller of a) the arrival recorded in the $start of the line we just
+         # read, or b) the first completion recorded in the completions buffer.
+         if ( @$buffer && $buffer->[0] < $start ) {
+            $direction       = 'C'; # Completion
+            $timestamp       = shift @$buffer;
+            $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+         }
+         else {
+            $direction       = 'A'; # Arrival
+            $timestamp       = $start;
+            $self->{pending} = undef;
+            # TODO: can this cause $end to be put onto @buffer multiple times?
+            # Perhaps if we defer the line when we cross an interval boundary,
+            # then we visit this code again and re-buffer the timestamp?
+            @$buffer         = sort { $a <=> $b } ( @$buffer, $end );
+         }
+      }
+      elsif ( @$buffer ) {
+         $direction = 'C';
+         $timestamp = shift @$buffer;
+      }
+      else { # We hit EOF.
+         return ( $self->{t_start} < $self->{current_ts} )
+            ? $self->make_event($self->{t_start}, $self->{current_ts})
+            : ();
+      }
+
+      # The notation used here is T_start for start of observation time (T).
+      # The divide, int(), and multiply effectively truncates the value to
+      # $interval precision.
+      my $t_start = int($timestamp / $self->{interval}) * $self->{interval};
+      $self->{t_start} ||= $timestamp; # Not $t_start; that'd skew 1st interval.
+
+      # If $timestamp is not within the current interval, then we need to save
+      # everything for later, compute stats for the rest of this interval, and
+      # return an event.  The next time we are called, we'll begin the next
+      # interval.  
+      if ( $t_start > $self->{t_start} ) {
+         # We need to compute how much time is left in this interval, and add
+         # that much busy_time and weighted_time to the running totals, but only
+         # if there is some request in progress.
+         if ( $self->{in_prg} ) {
+            $self->{busy_time}     += $t_start - $self->{current_ts};
+            $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
+         }
+
+         my $event = $self->make_event($self->{t_start}, $t_start);
+
+         # Reset running totals and last-time-seen stuff for next iteration,
+         # then return the event.
+         $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+         $self->{t_start} = $t_start; # Not $timestamp...
+         $self->{last_weighted_time} = $self->{weighted_time};
+         $self->{last_busy_time}     = $self->{busy_time};
+         $self->{last_arrivals}      = $self->{arrivals};
+         $self->{last_completions}   = $self->{completions};
+         $self->{response_times}     = [];
+         $self->{current_ts}         = $t_start;
+         $self->{last_pos_in_log}    = $pos_in_log;
+         return $event;
+      }
+
+      # Otherwise, we need to compute the running sums and keep looping.
+      else {
+         if ( $self->{in_prg} ) {
+            # $self->{current_ts} is intitially 0, which would seem likely to
+            # skew this computation.  But $self->{in_prg} will be 0 also, and
+            # $self->{current_ts} will get set immediately after this, so
+            # anytime this if() block runs, it'll be OK.
+            $self->{busy_time}     += $timestamp - $self->{current_ts};
+            $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
+         }
+         $self->{current_ts} = $timestamp;
+         if ( $direction eq 'A' ) {
+            ++$self->{in_prg};
+            ++$self->{arrivals};
+            push @{$self->{response_times}}, $elapsed;
+         }
+         else {
+            --$self->{in_prg};
+            ++$self->{completions};
+         }
+      }
+
+      $pos_in_log = $tell->();
+   } # EVENT
+
+   $args{oktorun}->(0) if $args{oktorun};
+   return;
+}
+
+# Makes an event and returns it.  Arguments:
+#  $t_start -- the start of the observation period for this event.
+#  $t_end   -- the end of the observation period for this event.
+sub make_event {
+   my ( $self, $t_start, $t_end ) = @_;
+
+   # Compute the parts of the event we'll return.
+   my $quantile_cutoff = sprintf( "%.0f", # Round to nearest int
+      scalar( @{ $self->{response_times} } ) * $self->{quantile} );
+   my @times = sort { $a <=> $b } @{ $self->{response_times} };
+   my $e_ts
+      = int( $self->{current_ts} / $self->{interval} ) * $self->{interval};
+   my $e_concurrency = sprintf( "%.6f",
+           ( $self->{weighted_time} - $self->{last_weighted_time} )
+         / ( $t_end - $t_start ) );
+   my $e_throughput = sprintf( "%.6f",
+           ( $self->{arrivals} - $self->{last_arrivals} )
+         / ( $t_end - $t_start ) );
+   my $e_arrivals = ( $self->{arrivals} - $self->{last_arrivals} );
+   my $e_completions
+      = ( $self->{completions} - $self->{last_completions} );
+   my $e_busy_time
+      = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
+   my $e_weighted_time = sprintf( "%.6f",
+      $self->{weighted_time} - $self->{last_weighted_time} );
+   my $e_sum_time
+      = sprintf( "%.6f", sum( @{ $self->{response_times} } ) );
+   my $e_quantile_time = $times[ $quantile_cutoff - 1 ];
+
+   # Construct the event
+   my $event = {
+      ts            => $e_ts,
+      concurrency   => $e_concurrency,
+      throughput    => $e_throughput,
+      arrivals      => $e_arrivals,
+      completions   => $e_completions,
+      busy_time     => $e_busy_time,
+      weighted_time => $e_weighted_time,
+      sum_time      => $e_sum_time,
+      quantile_time => $e_quantile_time,
+      pos_in_log    => $self->{last_pos_in_log},
+      obs_time      => sprintf("%.6f", $t_end - $t_start),
+   };
+
+   return $event;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TCPRequestAggregator package
+# ###########################################################################
