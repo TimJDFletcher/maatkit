@@ -30,11 +30,14 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 # Required arguments: interval, quantile
 sub new {
    my ( $class, %args ) = @_;
+   my @required_args = qw(interval quantile);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
    my $self = {
       buffer             => [],
       last_weighted_time => 0,
       last_busy_time     => 0,
-      last_arrivals      => 0,
       last_completions   => 0,
       current_ts         => 0,
       %args,
@@ -71,17 +74,21 @@ sub parse_event {
 
    EVENT:
    while ( 1 ) {
+      MKDEBUG && _d("Beginning a loop at pos", $pos_in_log);
       my ( $id, $start, $elapsed );
 
       my ($timestamp, $direction);
       if ( $self->{pending} ) {
          ( $id, $start, $elapsed ) = @{$self->{pending}};
+         MKDEBUG && _d("Pulled from pending", @{$self->{pending}});
       }
       elsif ( defined($line = $next_event->()) ) {
          # Split the line into ID, start, end, elapsed, and host:port
          my ($end, $host_port);
          ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
          @$buffer = sort { $a <=> $b } ( @$buffer, $end );
+         MKDEBUG && _d("Read from the file", $id, $start, $end, $elapsed, $host_port);
+         MKDEBUG && _d("Buffer is now", @$buffer);
       }
       if ( $start ) { # Test that we got a line; $id can be 0.
          # We have a line to work on.  The next event we need to process is the
@@ -91,21 +98,31 @@ sub parse_event {
             $direction       = 'C'; # Completion
             $timestamp       = shift @$buffer;
             $self->{pending} = [ $id, $start, $elapsed ];
+            MKDEBUG && _d("Completion: using buffered end value", $timestamp);
+            MKDEBUG && _d("Saving line to pending", @{$self->{pending}});
          }
          else {
             $direction       = 'A'; # Arrival
             $timestamp       = $start;
             $self->{pending} = undef;
+            MKDEBUG && _d("Arrival: using the line");
          }
       }
       elsif ( @$buffer ) {
          $direction = 'C';
          $timestamp = shift @$buffer;
+         MKDEBUG && _d("No more lines, reading from buffer", $timestamp);
       }
       else { # We hit EOF.
-         return ( $self->{t_start} < $self->{current_ts} )
-            ? $self->make_event($self->{t_start}, $self->{current_ts})
-            : ();
+         MKDEBUG && _d("No more lines, no more buffered end times");
+         if ( $self->{t_start} < $self->{current_ts} ) {
+            MKDEBUG && _d("Returning event based on what's been seen");
+            return $self->make_event($self->{t_start}, $self->{current_ts});
+         }
+         else {
+            MKDEBUG && _d("No further events to make");
+            return;
+         }
       }
 
       # The notation used here is T_start for start of observation time (T).
@@ -113,12 +130,14 @@ sub parse_event {
       # $interval precision.
       my $t_start = int($timestamp / $self->{interval}) * $self->{interval};
       $self->{t_start} ||= $timestamp; # Not $t_start; that'd skew 1st interval.
+      MKDEBUG && _d("Timestamp", $timestamp, "interval start time", $t_start);
 
       # If $timestamp is not within the current interval, then we need to save
       # everything for later, compute stats for the rest of this interval, and
       # return an event.  The next time we are called, we'll begin the next
       # interval.  
       if ( $t_start > $self->{t_start} ) {
+         MKDEBUG && _d("Timestamp doesn't belong to this interval");
          # We need to compute how much time is left in this interval, and add
          # that much busy_time and weighted_time to the running totals, but only
          # if there is some request in progress.
@@ -151,7 +170,6 @@ sub parse_event {
          $self->{current_ts} = $timestamp;
          if ( $direction eq 'A' ) {
             ++$self->{in_prg};
-            ++$self->{arrivals};
             push @{$self->{response_times}}, $elapsed;
          }
          else {
@@ -173,19 +191,20 @@ sub parse_event {
 sub make_event {
    my ( $self, $t_start, $t_end ) = @_;
 
-   # Compute the parts of the event we'll return.
+   # Prep a couple of things...
    my $quantile_cutoff = sprintf( "%.0f", # Round to nearest int
       scalar( @{ $self->{response_times} } ) * $self->{quantile} );
    my @times = sort { $a <=> $b } @{ $self->{response_times} };
+   MKDEBUG && _d(scalar(@times), "times, quantile'th is", $quantile_cutoff);
+
+   # Compute the parts of the event we'll return.
    my $e_ts
       = int( $self->{current_ts} / $self->{interval} ) * $self->{interval};
    my $e_concurrency = sprintf( "%.6f",
            ( $self->{weighted_time} - $self->{last_weighted_time} )
          / ( $t_end - $t_start ) );
-   my $e_throughput = sprintf( "%.6f",
-           ( $self->{arrivals} - $self->{last_arrivals} )
-         / ( $t_end - $t_start ) );
-   my $e_arrivals = ( $self->{arrivals} - $self->{last_arrivals} );
+   my $e_arrivals   = scalar(@times);
+   my $e_throughput = sprintf( "%.6f", $e_arrivals / ( $t_end - $t_start ) );
    my $e_completions
       = ( $self->{completions} - $self->{last_completions} );
    my $e_busy_time
@@ -214,10 +233,10 @@ sub make_event {
    $self->{t_start}            = $t_end;  # Not current_timestamp!
    $self->{last_weighted_time} = $self->{weighted_time};
    $self->{last_busy_time}     = $self->{busy_time};
-   $self->{last_arrivals}      = $self->{arrivals};
    $self->{last_completions}   = $self->{completions};
    $self->{response_times}     = [];
 
+   MKDEBUG && _d("Event is", Dumper($event));
    return $event;
 }
 
