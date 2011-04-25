@@ -71,33 +71,31 @@ sub parse_event {
 
    EVENT:
    while ( 1 ) {
-      my ( $id, $start, $end, $elapsed, $host_port );
+      my ( $id, $start, $elapsed );
 
       my ($timestamp, $direction);
       if ( $self->{pending} ) {
-         ( $id, $start, $end, $elapsed, $host_port ) = @{$self->{pending}};
+         ( $id, $start, $elapsed ) = @{$self->{pending}};
       }
       elsif ( defined($line = $next_event->()) ) {
          # Split the line into ID, start, end, elapsed, and host:port
+         my ($end, $host_port);
          ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
+         @$buffer = sort { $a <=> $b } ( @$buffer, $end );
       }
-      if ( $host_port ) { # Test that we got a line; $id can be 0.
+      if ( $start ) { # Test that we got a line; $id can be 0.
          # We have a line to work on.  The next event we need to process is the
          # smaller of a) the arrival recorded in the $start of the line we just
          # read, or b) the first completion recorded in the completions buffer.
          if ( @$buffer && $buffer->[0] < $start ) {
             $direction       = 'C'; # Completion
             $timestamp       = shift @$buffer;
-            $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+            $self->{pending} = [ $id, $start, $elapsed ];
          }
          else {
             $direction       = 'A'; # Arrival
             $timestamp       = $start;
             $self->{pending} = undef;
-            # TODO: can this cause $end to be put onto @buffer multiple times?
-            # Perhaps if we defer the line when we cross an interval boundary,
-            # then we visit this code again and re-buffer the timestamp?
-            @$buffer         = sort { $a <=> $b } ( @$buffer, $end );
          }
       }
       elsif ( @$buffer ) {
@@ -133,7 +131,7 @@ sub parse_event {
 
          # Reset running totals and last-time-seen stuff for next iteration,
          # then return the event.
-         $self->{pending} = [ $id, $start, $end, $elapsed, $host_port ];
+         $self->{pending} = [ $id, $start, $elapsed ];
          $self->{current_ts}         = $t_start;
          $self->{last_pos_in_log}    = $pos_in_log;
 
