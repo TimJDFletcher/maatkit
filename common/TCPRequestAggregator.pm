@@ -195,7 +195,10 @@ sub make_event {
    my $quantile_cutoff = sprintf( "%.0f", # Round to nearest int
       scalar( @{ $self->{response_times} } ) * $self->{quantile} );
    my @times = sort { $a <=> $b } @{ $self->{response_times} };
-   MKDEBUG && _d(scalar(@times), "times, quantile'th is", $quantile_cutoff);
+   my $arrivals = scalar(@times);
+   my $sum_times = sum( @times );
+   my $mean_times = ($sum_times || 0) / ($arrivals || 1);
+   my $var_times = sum( map { ($_ - $mean_times) **2 } @times ) / $arrivals;
 
    # Compute the parts of the event we'll return.
    my $e_ts
@@ -203,7 +206,7 @@ sub make_event {
    my $e_concurrency = sprintf( "%.6f",
            ( $self->{weighted_time} - $self->{last_weighted_time} )
          / ( $t_end - $t_start ) );
-   my $e_arrivals   = scalar(@times);
+   my $e_arrivals   = $arrivals;
    my $e_throughput = sprintf( "%.6f", $e_arrivals / ( $t_end - $t_start ) );
    my $e_completions
       = ( $self->{completions} - $self->{last_completions} );
@@ -211,8 +214,8 @@ sub make_event {
       = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
    my $e_weighted_time = sprintf( "%.6f",
       $self->{weighted_time} - $self->{last_weighted_time} );
-   my $e_sum_time
-      = sprintf( "%.6f", sum( @{ $self->{response_times} } ) );
+   my $e_sum_time = sprintf("%.6f", $sum_times);
+   my $e_variance_mean = sprintf("%.6f", $var_times / ($mean_times || 1));
    my $e_quantile_time = $times[ $quantile_cutoff - 1 ];
 
    # Construct the event
@@ -225,6 +228,7 @@ sub make_event {
       busy_time     => $e_busy_time,
       weighted_time => $e_weighted_time,
       sum_time      => $e_sum_time,
+      variance_mean => $e_variance_mean,
       quantile_time => $e_quantile_time,
       pos_in_log    => $self->{last_pos_in_log},
       obs_time      => sprintf("%.6f", $t_end - $t_start),
