@@ -68,7 +68,6 @@ sub parse_event {
    my ($next_event, $tell) = @args{@required_args};
 
    my $pos_in_log = $tell->();
-   my $line;
    my $buffer = $self->{buffer};
    $self->{last_pos_in_log} ||= $pos_in_log;
 
@@ -82,7 +81,7 @@ sub parse_event {
          ( $id, $start, $elapsed ) = @{$self->{pending}};
          MKDEBUG && _d("Pulled from pending", @{$self->{pending}});
       }
-      elsif ( defined($line = $next_event->()) ) {
+      elsif ( defined(my $line = $next_event->()) ) {
          # Split the line into ID, start, end, elapsed, and host:port
          my ($end, $host_port);
          ( $id, $start, $end, $elapsed, $host_port ) = $line =~ m/(\S+)/g;
@@ -98,6 +97,7 @@ sub parse_event {
             $direction       = 'C'; # Completion
             $timestamp       = shift @$buffer;
             $self->{pending} = [ $id, $start, $elapsed ];
+            $id = $start = $elapsed = undef;
             MKDEBUG && _d("Completion: using buffered end value", $timestamp);
             MKDEBUG && _d("Saving line to pending", @{$self->{pending}});
          }
@@ -105,6 +105,7 @@ sub parse_event {
             $direction       = 'A'; # Arrival
             $timestamp       = $start;
             $self->{pending} = undef;
+            MKDEBUG && _d("Deleting pending line");
             MKDEBUG && _d("Arrival: using the line");
          }
       }
@@ -115,6 +116,9 @@ sub parse_event {
       }
       else { # We hit EOF.
          MKDEBUG && _d("No more lines, no more buffered end times");
+         if ( $self->{in_prg} ) {
+            die "Error: no more lines, but in_prg = $self->{in_prg}";
+         }
          if ( $self->{t_start} < $self->{current_ts} ) {
             MKDEBUG && _d("Returning event based on what's been seen");
             return $self->make_event($self->{t_start}, $self->{current_ts});
@@ -142,18 +146,26 @@ sub parse_event {
          # that much busy_time and weighted_time to the running totals, but only
          # if there is some request in progress.
          if ( $self->{in_prg} ) {
+            MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $t_start);
             $self->{busy_time}     += $t_start - $self->{current_ts};
             $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
          }
 
-         my $event = $self->make_event($self->{t_start}, $t_start);
+         if ( @$buffer && $buffer->[0] < $t_start ) {
+            die "Error: completions for interval remain unprocessed";
+         }
 
          # Reset running totals and last-time-seen stuff for next iteration,
-         # then return the event.
-         $self->{pending} = [ $id, $start, $elapsed ];
-         $self->{current_ts}         = $t_start;
-         $self->{last_pos_in_log}    = $pos_in_log;
-
+         # re-buffer the completion or replace the line onto pending, then
+         # return the event.
+         my $event                = $self->make_event($self->{t_start}, $t_start);
+         $self->{last_pos_in_log} = $pos_in_log;
+         if ( $start ) {
+            $self->{pending} = [ $id, $start, $elapsed ];
+         }
+         else {
+            unshift @$buffer, $timestamp;
+         }
          return $event;
       }
 
@@ -164,15 +176,20 @@ sub parse_event {
             # skew this computation.  But $self->{in_prg} will be 0 also, and
             # $self->{current_ts} will get set immediately after this, so
             # anytime this if() block runs, it'll be OK.
+            MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $timestamp);
             $self->{busy_time}     += $timestamp - $self->{current_ts};
             $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
          }
          $self->{current_ts} = $timestamp;
          if ( $direction eq 'A' ) {
+            MKDEBUG && _d("Direction A", $timestamp);
             ++$self->{in_prg};
-            push @{$self->{response_times}}, $elapsed;
+            if ( defined $elapsed ) {
+               push @{$self->{response_times}}, $elapsed;
+            }
          }
          else {
+            MKDEBUG && _d("Direction C", $timestamp);
             --$self->{in_prg};
             ++$self->{completions};
          }
@@ -198,7 +215,10 @@ sub make_event {
    my $arrivals = scalar(@times);
    my $sum_times = sum( @times );
    my $mean_times = ($sum_times || 0) / ($arrivals || 1);
-   my $var_times = sum( map { ($_ - $mean_times) **2 } @times ) / $arrivals;
+   my $var_times = 0;
+   if ( @times ) {
+      $var_times = sum( map { ($_ - $mean_times) **2 } @times ) / $arrivals;
+   }
 
    # Compute the parts of the event we'll return.
    my $e_ts
@@ -214,9 +234,9 @@ sub make_event {
       = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
    my $e_weighted_time = sprintf( "%.6f",
       $self->{weighted_time} - $self->{last_weighted_time} );
-   my $e_sum_time = sprintf("%.6f", $sum_times);
+   my $e_sum_time = sprintf("%.6f", $sum_times || 0);
    my $e_variance_mean = sprintf("%.6f", $var_times / ($mean_times || 1));
-   my $e_quantile_time = $times[ $quantile_cutoff - 1 ];
+   my $e_quantile_time = sprintf("%.6f", $times[ $quantile_cutoff - 1 ] || 0);
 
    # Construct the event
    my $event = {
@@ -235,6 +255,7 @@ sub make_event {
    };
 
    $self->{t_start}            = $t_end;  # Not current_timestamp!
+   $self->{current_ts}         = $t_end;  # Next iteration will begin at boundary
    $self->{last_weighted_time} = $self->{weighted_time};
    $self->{last_busy_time}     = $self->{busy_time};
    $self->{last_completions}   = $self->{completions};
