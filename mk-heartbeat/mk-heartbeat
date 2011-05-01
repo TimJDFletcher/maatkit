@@ -3182,7 +3182,7 @@ Use C<REPLACE> instead of C<UPDATE> for --update.
 When running in L<"--update"> mode, use C<REPLACE> instead of C<UPDATE> to set
 the heartbeat table's timestamp.  The C<REPLACE> statement is a MySQL extension
 to SQL.  This option is useful when you don't know whether the table contains
-any rows or not.
+any rows or not.  It must be used in conjunction with --update.
 
 =item --run-time
 
