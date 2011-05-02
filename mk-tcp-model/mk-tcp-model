@@ -1660,7 +1660,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TCPRequestAggregator package 7447
+# TCPRequestAggregator package 7450
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TCPRequestAggregator.pm
@@ -1686,7 +1686,7 @@ sub new {
    my $self = {
       buffer             => [],
       last_weighted_time => 0,
-      last_busy_time     => 0,
+      last_res_time      => 0,
       last_completions   => 0,
       current_ts         => 0,
       %args,
@@ -1768,7 +1768,7 @@ sub parse_event {
          MKDEBUG && _d("Timestamp doesn't belong to this interval");
          if ( $self->{in_prg} ) {
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $t_start);
-            $self->{busy_time}     += $t_start - $self->{current_ts};
+            $self->{res_time}      += $t_start - $self->{current_ts};
             $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
          }
 
@@ -1790,7 +1790,7 @@ sub parse_event {
       else {
          if ( $self->{in_prg} ) {
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $timestamp);
-            $self->{busy_time}     += $timestamp - $self->{current_ts};
+            $self->{res_time}      += $timestamp - $self->{current_ts};
             $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
          }
          $self->{current_ts} = $timestamp;
@@ -1838,8 +1838,8 @@ sub make_event {
    my $e_throughput = sprintf( "%.6f", $e_arrivals / ( $t_end - $t_start ) );
    my $e_completions
       = ( $self->{completions} - $self->{last_completions} );
-   my $e_busy_time
-      = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
+   my $e_res_time
+      = sprintf( "%.6f", $self->{res_time} - $self->{last_res_time} );
    my $e_weighted_time = sprintf( "%.6f",
       $self->{weighted_time} - $self->{last_weighted_time} );
    my $e_sum_time = sprintf("%.6f", $sum_times || 0);
@@ -1852,7 +1852,7 @@ sub make_event {
       throughput    => $e_throughput,
       arrivals      => $e_arrivals,
       completions   => $e_completions,
-      busy_time     => $e_busy_time,
+      res_time      => $e_res_time ,
       weighted_time => $e_weighted_time,
       sum_time      => $e_sum_time,
       variance_mean => $e_variance_mean,
@@ -1864,7 +1864,7 @@ sub make_event {
    $self->{t_start}            = $t_end;  # Not current_timestamp!
    $self->{current_ts}         = $t_end;  # Next iteration will begin at boundary
    $self->{last_weighted_time} = $self->{weighted_time};
-   $self->{last_busy_time}     = $self->{busy_time};
+   $self->{last_res_time}      = $self->{res_time};
    $self->{last_completions}   = $self->{completions};
    $self->{response_times}     = [];
 
@@ -2004,7 +2004,7 @@ sub main {
          else {
             printf "%s %5.2f %9.3f %5d %5d %.6f %.6f %.6f %.6f %.6f %.6f\n",
                @{$event}{qw(
-                ts concurrency throughput arrivals completions busy_time
+                ts concurrency throughput arrivals completions res_time
                 weighted_time sum_time variance_mean quantile_time obs_time)};
          }
          $pr->update($tell) if $pr;
@@ -2068,10 +2068,14 @@ FILE is -, it read standard input.
 
 Dump TCP requests and responses to a file, capturing only the packet headers to
 avoid dropped packets, and ignoring any packets without a payload (such as
-ack-only packets).  Capture port 3306 (MySQL database traffic).
+ack-only packets).  Capture port 3306 (MySQL database traffic).  Note that to
+avoid line breaking in terminals and man pages, the TCP filtering expression
+that follows has a line break at the end of the second line; you should omit
+this from your tcpdump command.
 
  tcpdump -s 384 -i any -nnq -tttt \
-	'tcp port 3306 and (((ip[2:2] - ((ip[0]&0xf)<<2)) - ((tcp[12]&0xf0)>>2)) != 0)' \
+	'tcp port 3306 and (((ip[2:2] - ((ip[0]&0xf)<<2)) 
+      - ((tcp[12]&0xf0)>>2)) != 0)' \
    > /path/to/tcp-file.txt
 
 Extract individual response times, sorted by end time:
@@ -2080,12 +2084,12 @@ Extract individual response times, sorted by end time:
 
 Sort the result by arrival time, for input to the next step:
 
- sort -n -k1,1 requests.txt > sorted-requests.txt
+ sort -n -k1,1 requests.txt > sorted.txt
 
 Slice the result into 10-second intervals and emit throughput, concurrency, and
 response time metrics for each interval:
 
- mk-tcp-model --type=requests --run-time=10 sorted-requests.txt > sliced.txt
+ mk-tcp-model --type=requests --run-time=10 sorted.txt > sliced.txt
 
 =head1 RISKS
 
@@ -2168,9 +2172,9 @@ The number of arrivals during the interval.
 
 The number of completions during the interval.
 
-=item busy_time
+=item res_time
 
-The total amount of time during which there was at least one request resident in
+The total amount of time during which at least one request was resident in
 the server during the interval.
 
 =item weighted_time
