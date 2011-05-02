@@ -37,7 +37,7 @@ sub new {
    my $self = {
       buffer             => [],
       last_weighted_time => 0,
-      last_busy_time     => 0,
+      last_res_time      => 0,
       last_completions   => 0,
       current_ts         => 0,
       %args,
@@ -143,11 +143,11 @@ sub parse_event {
       if ( $t_start > $self->{t_start} ) {
          MKDEBUG && _d("Timestamp doesn't belong to this interval");
          # We need to compute how much time is left in this interval, and add
-         # that much busy_time and weighted_time to the running totals, but only
+         # that much res_time  and weighted_time to the running totals, but only
          # if there is some request in progress.
          if ( $self->{in_prg} ) {
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $t_start);
-            $self->{busy_time}     += $t_start - $self->{current_ts};
+            $self->{res_time}      += $t_start - $self->{current_ts};
             $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
          }
 
@@ -177,7 +177,7 @@ sub parse_event {
             # $self->{current_ts} will get set immediately after this, so
             # anytime this if() block runs, it'll be OK.
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $timestamp);
-            $self->{busy_time}     += $timestamp - $self->{current_ts};
+            $self->{res_time}      += $timestamp - $self->{current_ts};
             $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
          }
          $self->{current_ts} = $timestamp;
@@ -230,8 +230,8 @@ sub make_event {
    my $e_throughput = sprintf( "%.6f", $e_arrivals / ( $t_end - $t_start ) );
    my $e_completions
       = ( $self->{completions} - $self->{last_completions} );
-   my $e_busy_time
-      = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
+   my $e_res_time
+      = sprintf( "%.6f", $self->{res_time} - $self->{last_res_time} );
    my $e_weighted_time = sprintf( "%.6f",
       $self->{weighted_time} - $self->{last_weighted_time} );
    my $e_sum_time = sprintf("%.6f", $sum_times || 0);
@@ -245,7 +245,7 @@ sub make_event {
       throughput    => $e_throughput,
       arrivals      => $e_arrivals,
       completions   => $e_completions,
-      busy_time     => $e_busy_time,
+      res_time      => $e_res_time ,
       weighted_time => $e_weighted_time,
       sum_time      => $e_sum_time,
       variance_mean => $e_variance_mean,
@@ -257,7 +257,7 @@ sub make_event {
    $self->{t_start}            = $t_end;  # Not current_timestamp!
    $self->{current_ts}         = $t_end;  # Next iteration will begin at boundary
    $self->{last_weighted_time} = $self->{weighted_time};
-   $self->{last_busy_time}     = $self->{busy_time};
+   $self->{last_res_time}      = $self->{res_time};
    $self->{last_completions}   = $self->{completions};
    $self->{response_times}     = [];
 
