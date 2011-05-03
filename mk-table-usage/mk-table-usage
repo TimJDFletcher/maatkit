@@ -2227,7 +2227,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -2273,7 +2273,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -3614,7 +3614,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7432
+# TableUsage package 7453
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3696,9 +3696,15 @@ sub _get_tables_used_from_query_parser {
    MKDEBUG && _d('Getting tables used from query parser');
 
    $query = $self->{QueryParser}->clean_query($query);
-   my ($query_type) = $query =~ m/(\w+)\s+/;
+   my ($query_type) = $query =~ m/^\s*(\w+)\s+/;
    $query_type = uc $query_type;
    die "Query does not begin with a word" unless $query_type; # shouldn't happen
+
+   if ( $query_type eq 'DROP' ) {
+      my ($drop_what) = $query =~ m/^\s*DROP\s+(\w+)\s+/i;
+      die "Invalid DROP query: $query" unless $drop_what;
+      $query_type .= '_' . uc($drop_what);
+   }
 
    my @tables_used;
    foreach my $table ( $self->{QueryParser}->get_tables($query) ) {
@@ -3810,7 +3816,7 @@ sub _get_tables_used_from_query_struct {
             @where_tables,
          ];
       }
-   }
+   } # multi-table UPDATE
    else {
       if ( $query_type eq 'SELECT' ) {
          my $clist_tables = $self->_get_tables_used_in_columns(
@@ -3862,6 +3868,7 @@ sub _get_tables_used_from_query_struct {
                      %args,
                      tables => $tables,
                      where  => $table->{join}->{where},
+                     clause => 'JOIN condition',  # just for debugging
                   );
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
                      $self->_change_context(
@@ -4019,7 +4026,7 @@ sub _get_tables_used_in_where {
    my ($tables, $where) = @args{@required_args};
    my $sql_parser = $self->{SQLParser};
 
-   MKDEBUG && _d("Getting tables used in WHERE");
+   MKDEBUG && _d("Getting tables used in", $args{clause} || 'WHERE');
 
    my %filter_tables;
    my %join_tables;
@@ -4963,6 +4970,15 @@ sub main {
 
             $args->{event} = undef;  # remove event from previous pass
 
+            if ( $o->got('query') ) {
+               if ( $args->{query} ) {
+                  delete $args->{query};  # terminate
+               }
+               else {
+                  $args->{query} = $o->get('query');  # analyze query once
+               }
+            }
+
             return $args;
          },
       );
@@ -4978,6 +4994,12 @@ sub main {
          name    => 'input',
          process => sub {
             my ( $args ) = @_;
+
+            if ( $o->got('query') ) {
+               MKDEBUG && _d("No input; using --query");
+               return $args;
+            }
+
             # Only get the next file when there's no fh or no more events in
             # the current fh.  This allows us to do collect-and-report cycles
             # (i.e. iterations) on huge files.  This doesn't apply to infinite
@@ -5027,50 +5049,64 @@ sub main {
    } # input
 
    { # event
-      # Only slowlogs are supported, but if we want parse other formats,
-      # just tweak the code below to be like mk-query-digest.
-      my %alias_for = (
-         slowlog   => ['SlowLogParser'],
-         # binlog    => ['BinaryLogParser'],
-         # genlog    => ['GeneralLogParser'],
-         # tcpdump   => ['TcpdumpParser','MySQLProtocolParser'],
-      );
-      my $type = ['slowlog'];
-      $type    = $alias_for{$type->[0]} if $alias_for{$type->[0]};
-
-      foreach my $module ( @$type ) {
-         my $parser;
-         eval {
-            $parser = $module->new(
-               o => $o,
-            );
-         };
-         if ( $EVAL_ERROR ) {
-            die "Failed to load $module module: $EVAL_ERROR";
-         }
-         
+      if ( $o->got('query') ) {
          $pipeline->add(
-            name    => ref $parser,
+            name    => '--query',
             process => sub {
                my ( $args ) = @_;
-               if ( $args->{input_fh} ) {
-                  my $event = $parser->parse_event(
-                     event       => $args->{event},
-                     next_event  => $args->{next_event},
-                     tell        => $args->{tell},
-                     oktorun     => sub { $args->{more_events} = $_[0]; },
-                  );
-                  if ( $event ) {
-                     $args->{event} = $event;
-                     return $args;
-                  }
-                  MKDEBUG && _d("No more events, input EOF");
-                  return;  # next input
+               if ( $args->{query} ) {
+                  $args->{event}->{arg} = $args->{query};
                }
-               # No input, let pipeline run so the last report is printed.
                return $args;
             },
          );
+      }
+      else {
+         # Only slowlogs are supported, but if we want parse other formats,
+         # just tweak the code below to be like mk-query-digest.
+         my %alias_for = (
+            slowlog   => ['SlowLogParser'],
+            # binlog    => ['BinaryLogParser'],
+            # genlog    => ['GeneralLogParser'],
+            # tcpdump   => ['TcpdumpParser','MySQLProtocolParser'],
+         );
+         my $type = ['slowlog'];
+         $type    = $alias_for{$type->[0]} if $alias_for{$type->[0]};
+
+         foreach my $module ( @$type ) {
+            my $parser;
+            eval {
+               $parser = $module->new(
+                  o => $o,
+               );
+            };
+            if ( $EVAL_ERROR ) {
+               die "Failed to load $module module: $EVAL_ERROR";
+            }
+            
+            $pipeline->add(
+               name    => ref $parser,
+               process => sub {
+                  my ( $args ) = @_;
+                  if ( $args->{input_fh} ) {
+                     my $event = $parser->parse_event(
+                        event       => $args->{event},
+                        next_event  => $args->{next_event},
+                        tell        => $args->{tell},
+                        oktorun     => sub { $args->{more_events} = $_[0]; },
+                     );
+                     if ( $event ) {
+                        $args->{event} = $event;
+                        return $args;
+                     }
+                     MKDEBUG && _d("No more events, input EOF");
+                     return;  # next input
+                  }
+                  # No input, let pipeline run so the last report is printed.
+                  return $args;
+               },
+            );
+         }
       }
    } # event
 
@@ -5086,11 +5122,11 @@ sub main {
             my ( $args ) = @_;
 
             # Stop running if there's no more input.
-            if ( !$args->{input_fh} ) {
+            if ( !$args->{input_fh} && !$args->{query} ) {
                MKDEBUG && _d("No more input, terminating pipeline");
 
                # This shouldn't happen, but I want to know if it does.
-               warn "There's an event in the pipeline but no current input: "
+               warn "Event in the pipeline but no current input: "
                      . Dumper($args)
                   if $args->{event};
 
@@ -5741,7 +5777,8 @@ Connect to host.
 type: string
 
 Identify each event using this attribute.  If not ID attribute is given, then
-events are identified by an auto-incrementing integer.
+events are identified with the query's checksum: an MD5 hex checksum of the
+query's fingerprint.
 
 =item --log
 
@@ -5779,6 +5816,15 @@ Print progress reports to STDERR.  The value is a comma-separated list with two
 parts.  The first part can be percentage, time, or iterations; the second part
 specifies how often an update should be printed, in percentage, seconds, or
 number of iterations.
+
+=item --query
+
+type: string
+
+Analyze only this given query.  If you want to analyze the table usage of
+one simple query by providing on the command line instead of reading it
+from a slow log file, then specify that query with this option.  The default
+L<"--id-attribute"> will be used which is the query's checksum.
 
 =item --read-timeout
 

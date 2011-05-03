@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 4;
+use Test::More tests => 5;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -41,6 +41,14 @@ ok(
    'Analysis for slow002.txt (issue 1237)'
 );
 
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, '--query',
+         'DROP TABLE IF EXISTS t') },
+      "$out/drop-table-if-exists.txt",
+   ),
+   'DROP TABLE IF EXISTS'
+);
 
 # ############################################################################
 # --id-attribute
