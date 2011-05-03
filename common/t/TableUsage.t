@@ -488,7 +488,7 @@ test_get_table_usage(
    "DROP TABLE foo",
    [
       [
-         { context => 'DROP',
+         { context => 'DROP_TABLE',
            table   => 'foo',
          },
       ],
@@ -500,7 +500,7 @@ test_get_table_usage(
    "DROP TABLE IF EXISTS foo",
    [
       [
-         { context => 'DROP',
+         { context => 'DROP_TABLE',
            table   => 'foo',
          },
       ],

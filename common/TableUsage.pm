@@ -146,9 +146,17 @@ sub _get_tables_used_from_query_parser {
    MKDEBUG && _d('Getting tables used from query parser');
 
    $query = $self->{QueryParser}->clean_query($query);
-   my ($query_type) = $query =~ m/(\w+)\s+/;
+   my ($query_type) = $query =~ m/^\s*(\w+)\s+/;
    $query_type = uc $query_type;
    die "Query does not begin with a word" unless $query_type; # shouldn't happen
+
+   if ( $query_type eq 'DROP' ) {
+      my ($drop_what) = $query =~ m/^\s*DROP\s+(\w+)\s+/i;
+      die "Invalid DROP query: $query" unless $drop_what;
+      # Don't use a space like "DROP TABLE" because the output of
+      # mk-table-usage is space-separated.
+      $query_type .= '_' . uc($drop_what);
+   }
 
    my @tables_used;
    foreach my $table ( $self->{QueryParser}->get_tables($query) ) {
