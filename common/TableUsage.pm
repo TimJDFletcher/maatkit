@@ -266,7 +266,7 @@ sub _get_tables_used_from_query_struct {
             @where_tables,
          ];
       }
-   }
+   } # multi-table UPDATE
    else {
       # Only data in tables referenced in the column list are returned
       # to the user.  So a table can appear in the tlist (e.g. after FROM)
@@ -322,6 +322,7 @@ sub _get_tables_used_from_query_struct {
                      %args,
                      tables => $tables,
                      where  => $table->{join}->{where},
+                     clause => 'JOIN condition',  # just for debugging
                   );
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
                      $self->_change_context(
@@ -485,7 +486,7 @@ sub _get_tables_used_in_where {
    my ($tables, $where) = @args{@required_args};
    my $sql_parser = $self->{SQLParser};
 
-   MKDEBUG && _d("Getting tables used in WHERE");
+   MKDEBUG && _d("Getting tables used in", $args{clause} || 'WHERE');
 
    my %filter_tables;
    my %join_tables;

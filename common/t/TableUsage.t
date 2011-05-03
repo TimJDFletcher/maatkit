@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 21;
+use Test::More tests => 23;
 
 use MaatkitTest;
 use QueryParser;
@@ -435,6 +435,40 @@ test_get_table_usage(
    "SELECT NOW()"
 );
 
+#test_get_table_usage(
+#   "SELECT
+#      automated_process.id id,
+#      class,
+#      automated_process_instance.server,
+#      IF(start IS NULL, 0, 1),
+#      owner
+#   FROM
+#      zn.automated_process_instance      
+#      INNER JOIN zn.automated_process ON automated_process=automated_process.id
+#   WHERE
+#      automated_process_instance.id = 5251414",
+#   [
+#      [
+#         { context => 'SELECT',
+#           table   => 'zn.automated_process',
+#         },
+#         { context => 'SELECT',
+#           table   => 'zn.automated_process_instance',
+#         },
+#         { context => 'JOIN',
+#           table   => 'zn.automated_process_instance',
+#         },
+#         { context => 'JOIN',
+#           table   => 'zn.automated_process',
+#         },
+#         { context => 'WHERE',
+#           table   => 'zn.automated_process_instance',
+#         },
+#      ]
+#   ],
+#   "SELECT explicit INNER JOIN with condition"
+#);
+
 # ############################################################################
 # Queries parsable by QueryParser
 # ############################################################################
@@ -443,11 +477,35 @@ test_get_table_usage(
    [
       [
          { context => 'ALTER',
-         table   => 'tt.ks',
+           table   => 'tt.ks',
          },
       ],
    ],
    "ALTER TABLE"
+);
+
+test_get_table_usage(
+   "DROP TABLE foo",
+   [
+      [
+         { context => 'DROP',
+           table   => 'foo',
+         },
+      ],
+   ],
+   "DROP TABLE"
+);
+
+test_get_table_usage(
+   "DROP TABLE IF EXISTS foo",
+   [
+      [
+         { context => 'DROP',
+           table   => 'foo',
+         },
+      ],
+   ],
+   "DROP TABLE IF EXISTS"
 );
 
 # #############################################################################
