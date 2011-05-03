@@ -2534,7 +2534,7 @@ can also supply your own patterns with the L<"--load-patterns"> option.
 
 =head1 OUTPUT
 
-The output is a simple tabular list of error log entires:
+The output is a simple tabular list of error log entries:
 
   Count Level   Message                                           
   ===== ======= ==================================================
@@ -2546,7 +2546,7 @@ The output is a simple tabular list of error log entires:
       1 error   [ERROR] /usr/sbin/mysqld: unknown variable 'ssl-ke
       1 error   [ERROR] Failed to initialize the master info struc
 
-The log entries (Message) are usually truncated; the full entrie is not
+The log entries (Message) are usually truncated; the full entry is not
 always shown.
 
 =head1 OPTIONS

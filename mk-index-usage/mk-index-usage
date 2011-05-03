@@ -5402,11 +5402,12 @@ cases where it fails, submit a bug report and a reproducible test case.
 
 Queries that cannot be EXPLAINed will cause all subsequent queries with the
 same fingerprint to be blacklisted.  This is to reduce the work they cause, and
-prevent them from continuing to print error messages.  However, at least in this
-stage of the tool's development, it is my opinion that it's not a good idea to
-pre-emtively silence these, or prevent them from being EXPLAINed at all.  I am
-looking for lots of feedback on how to improve things like the query parsing.
-So please submit your test cases based on the errors the tool prints!
+prevent them from continuing to print error messages.  However, at least in
+this stage of the tool's development, it is my opinion that it's not a good
+idea to preemptively silence these, or prevent them from being EXPLAINed at
+all.  I am looking for lots of feedback on how to improve things like the
+query parsing.  So please submit your test cases based on the errors the tool
+prints!
 
 =head1 OUTPUT
 

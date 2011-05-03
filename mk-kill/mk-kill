@@ -7,7 +7,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -4052,7 +4052,7 @@ Usage: mk-kill [OPTION]... [FILE...]
 
 mk-kill kills MySQL connections.  mk-kill connects to MySQL and gets queries
 from SHOW PROCESSLIST if no FILE is given.  Else, it reads queries from one
-or more FILE which containts the output of SHOW PROCESSLIST.  If FILE is -,
+or more FILE which contains the output of SHOW PROCESSLIST.  If FILE is -,
 mk-kill reads from STDIN.
 
 Kill queries running longer than 60s:
@@ -4158,7 +4158,7 @@ query, or all queries, etc.
 The forth and final step is to take some action on all matching queries
 from all classes.  The C<Actions> options specify which actions will be
 taken.  At this step, there are no more classes, just a single list of
-querys to kill, print, etc.
+queries to kill, print, etc.
 
 =head1 OUTPUT
 
@@ -4407,7 +4407,7 @@ These options filter queries from their classes.  If a query does not
 match, it is removed from its class.  The C<--ignore> options take precedence.
 The matches for command, db, host, etc. correspond to the columns returned
 by SHOW PROCESSLIST: Command, db, Host, etc.  All pattern matches are
-case-sensitive by default, but they can be made case-insenstive by specifying
+case-sensitive by default, but they can be made case-insensitive by specifying
 a regex pattern like C<(?i-xsm:select)>.
 
 See also L<"GROUP, MATCH AND KILL">.
@@ -4422,11 +4422,11 @@ Match all queries that are not ignored.  If no ignore options are specified,
 then every query matches (except replication threads, unless
 L<"--replication-threads"> is also specified).  This option allows you to
 specify negative matches, i.e. "match every query I<except>..." where the
-execptions are defined by specifying varous C<--ignore> options.
+exceptions are defined by specifying various C<--ignore> options.
 
 This option is I<not> the same as L<"--victims"> C<all>.  This option matches
 all queries within a class, whereas L<"--victims"> C<all> specifies that all
-matching quries in a class (however they matched) will be killed.  Normally,
+matching queries in a class (however they matched) will be killed.  Normally,
 however, the two are used together because if, for example, you specify
 L<"--victims"> C<oldest>, then although all queries may match, only the oldest
 will be killed.
@@ -4814,7 +4814,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software

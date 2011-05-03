@@ -4768,7 +4768,7 @@ mk-slave-prefetch - Pipeline relay logs on a MySQL slave to pre-warm caches.
 
 =head1 SYNOPSIS
 
-Usage: mk-slave-prefech [OPTION...] [FILE]
+Usage: mk-slave-prefetch [OPTION...] [FILE]
 
 mk-slave-prefetch pipelines relay logs to pre-warm the slave's caches.
 
@@ -5027,7 +5027,7 @@ statements through.  See the L<"--reject-regexp"> and L<"--permit-regexp">
 options.
 
 If C<mk-slave-prefetch> hasn't seen a query's fingerprint before, and thus
-doesn't know how long it will take to execute, it wraps it in a subuery, like
+doesn't know how long it will take to execute, it wraps it in a subquery, like
 this:
 
    SELECT 1 FROM ( <query> ) AS X LIMIT 1;
@@ -5047,7 +5047,7 @@ queries).  The rewritten query will then look like the following;
 =item --num-prefix
 
 Abstract away numeric table name prefixes.  This causes the following two
-queries to "fingeprint" to the same thing:
+queries to "fingerprint" to the same thing:
 
   select from 1_2_users;
   select from 2_3_users;

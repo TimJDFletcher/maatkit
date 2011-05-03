@@ -10231,7 +10231,7 @@ was created by Baron Schwartz; Baron and Daniel Nichter are the primary
 code contributors.  Both are employed by Percona.  Financial support for
 Maatkit development is primarily provided by Percona and its clients. 
 
-=head1 HISTORY AND ACKNOWLEDGEMENTS
+=head1 HISTORY AND ACKNOWLEDGMENTS
 
 My work is based in part on Giuseppe Maxia's work on distributed databases,
 L<http://www.sysadminmag.com/articles/2004/0408/> and code derived from that

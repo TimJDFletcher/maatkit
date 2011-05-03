@@ -4719,7 +4719,7 @@ Rebuild but do not alter the table, and keep the old (original) table:
 
   mk-online-schema-change h=127.1,t=db.tbl
 
-Add column to parent table, update child table foreign key contraints:
+Add column to parent table, update child table foreign key constraints:
 
   mk-online-schema-change                       \
     h=127.1,D=db,t=parent                       \
@@ -4788,7 +4788,7 @@ Most of the tool's work is done in the third step which has 6 phases:
 There are several ways to accomplish an online schema change which differ
 in how changes are captured and synced (phases 2 and 4), how rows are copied
 (phase 3), and how the tables are swapped (phase 5).  Currently, this tool
-employs sychronous triggers (Shlomi's method), C<INSERT-SELECT>, and
+employs synchronous triggers (Shlomi's method), C<INSERT-SELECT>, and
 C<RENAME TABLE> respectively for these phases.
 
 Here are options related to each phase:
@@ -4819,7 +4819,7 @@ L<"SYNOPSIS"> and usage information for details.
 
 type: string
 
-Semicolon-separated list of C<ALTER TABLE> statments to apply to the new table.
+Semicolon-separated list of C<ALTER TABLE> statements to apply to the new table.
 The statements should not contain C<ALTER TABLE>, just what would follow that
 clause.  For example, if you want to C<ALTER TABLE ENGINE=InnoDB>, the value
 would be C<ENGINE=InnoDB>.
@@ -4855,12 +4855,12 @@ Foreign key constraints in these (child) tables reference the old table.
 If the old table being altered is a parent to tables which reference it with
 foreign key constraints, you must specify those child tables with this option
 so that the tool will update the foreign key constraints after renaming
-tables.  The list of child tables is comma-separted, not quoted, and not
+tables.  The list of child tables is comma-separated, not quoted, and not
 database-qualified (the database is assumed to be the same as the old table)
 If you specify a table that doesn't exist, it is ignored.
 
 Or you can specify just C<auto_detect> and the tool will query the
-C<INFORMATION_SCHEMA> to auto-detect any foreign key contraints on the
+C<INFORMATION_SCHEMA> to auto-detect any foreign key constraints on the
 old table.
 
 When specifying this option, you must also specify
@@ -5027,7 +5027,7 @@ foreign key constraints that reference the renamed table so that the rename
 does not break foreign key constraints.  This poses a problem for this tool.
 For example: if the old table being altered is called C<foo>, then
 L<"--[no]rename-tables"> renames C<foo> to C<__old_foo> so that the altered
-copy, C<__new_foo>, can be renamed to C<foo>.  Any foreign key referenes to
+copy, C<__new_foo>, can be renamed to C<foo>.  Any foreign key references to
 the old C<foo> are renamed by MySQL to C<__old_foo> which is not what
 we want; we want those reference to remain C<foo>.
 
@@ -5057,7 +5057,7 @@ MySQL does not auto-rename references to it.  Then the new table is renamed
 to the same name, so child table references are maintained.  So this method
 requires L<"--drop-old-table">.
 
-This method is faster and does not block, but it is less safe for two reaons.
+This method is faster and does not block, but it is less safe for two reasons.
 One, for a very short time (between dropping the old table and renaming the
 new table) the child tables reference a non-existent table.  Two, more
 importantly, if for some reason the new table was not copied correctly, didn't

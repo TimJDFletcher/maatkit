@@ -3026,7 +3026,7 @@ to use the standard connection-related command line options:
 L<"--defaults-file">, L<"--password">, L<"--host">, L<"--port">, L<"--socket">
 or L<"--user">.
 
-The second method to specifiy the master host is a DSN.  A DSN is a special
+The second method to specify the master host is a DSN.  A DSN is a special
 syntax that can be either just a hostname (like C<server.domain.com> or
 C<1.2.3.4>), or a C<key=value,key=value> string. Keys are a single letter:
 

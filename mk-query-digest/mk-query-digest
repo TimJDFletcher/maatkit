@@ -11926,8 +11926,7 @@ $OUTPUT_AUTOFLUSH     = 1;
 Transformers->import(qw(shorten micro_t percentage_of ts make_checksum
    any_unix_timestamp parse_timestamp unix_timestamp crc32));
 
-use constant MKDEBUG        => $ENV{MKDEBUG}        || 0;
-use constant MKDEBUG_MEMORY => $ENV{MKDEBUG_MEMORY} || 0;
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
 use sigtrap 'handler', \&sig_int, 'normal-signals';
 
@@ -13780,8 +13779,8 @@ sub verify_run_time {
       else {
          # If run time is sub-minute (some amount of seconds), it should
          # divide evenly into minute boundaries.  If it's sub-minute
-         # (some amount of minutes), it should divide evently into hour
-         # boundaries.  If it's sub-hour, it should divide evently into
+         # (some amount of minutes), it should divide evenly into hour
+         # boundaries.  If it's sub-hour, it should divide eventy into
          # day boundaries.
          $boundary = $run_time <= 60   ? 60     # seconds divide into minutes
                    : $run_time <= 3600 ? 3600   # minutes divide into hours
@@ -14312,7 +14311,7 @@ attribute's value and removes the alias attribute.
 
 If the event has the primary attribute, all alias attributes are deleted.
 
-This helps to simplify event attributes so that, for example, there will not
+This helps simplify event attributes so that, for example, there will not
 be report lines for both db and Schema.
 
 =item --attribute-value-limit
@@ -15239,7 +15238,7 @@ L<"--run-time"> specifies interval boundaries of log time into which events
 are divided and reports are generated.  This mode is different from the
 others because it doesn't specify how long to run.  The value of
 L<"--run-time"> must be an interval that divides evenly into minutes, hours
-or days.  For example, C<5m> divides evently into hours (60/5=12, so 12
+or days.  For example, C<5m> divides evenly into hours (60/5=12, so 12
 5 minutes intervals per hour) but C<7m> does not (60/7=8.6).
 
 Specifying C<--run-time-mode interval --run-time 30m --iterations 0> is
@@ -15254,7 +15253,7 @@ Intervals are calculated from the zeroth second/minute/hour in which a
 timestamp occurs, not from whatever time it specifies.  For example,
 with 30 minute intervals and a timestamp of C<12:10:30>, the interval
 is I<not> C<12:10:30> to C<12:40:30>, it is C<12:00:00> to C<12:29:59>.
-Or, with 1 hour interavals, it is C<12:00:00> to C<12:59:59>.
+Or, with 1 hour intervals, it is C<12:00:00> to C<12:59:59>.
 When a new timestamp exceeds the interval, a report is printed, and the
 next interval is recalculated based on the new timestamp.
 

@@ -5494,7 +5494,7 @@ A table usage report is printed for each query that looks like:
   JOIN t2
   WHERE t1
 
-Usage reports are separted by blank lines.  The first line is always the
+Usage reports are separated by blank lines.  The first line is always the
 query ID: a unique ID that can be used to parse the output and store the
 usage reports in a table keyed on this ID.  The query ID has two parts
 separated by a period: the query ID and the target table number.

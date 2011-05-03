@@ -11278,7 +11278,7 @@ See also L<"BUGS"> for more information on filing bugs and getting help.
 
 mk-upgrade executes queries from slowlogs on one or more MySQL server to find
 differences in query time, warnings, results, and other aspects of the querys'
-execution.  This helps to evaluate upgrades, migrations and configuration
+execution.  This helps evaluate upgrades, migrations and configuration
 changes.  The comparisons specified by L<"--compare"> determine what
 differences can be found.  A report is printed which outlines all the
 differences found; see L<"OUTPUT"> below.
