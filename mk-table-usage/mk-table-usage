@@ -5,7 +5,7 @@
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 # WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-# MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 #
 # This program is free software; you can redistribute it and/or modify it under
 # the terms of the GNU General Public License as published by the Free Software
@@ -3614,7 +3614,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7453
+# TableUsage package 7458
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3644,6 +3644,8 @@ sub new {
    }
 
    my $self = {
+      constant_data_value => 'DUAL',
+
       %args,
    };
 
@@ -3738,7 +3740,9 @@ sub _get_tables_used_from_query_struct {
 
    if ( !$tables || @$tables == 0 ) {
       MKDEBUG && _d("Query does not use any tables");
-      return [ [ { context => $query_type, table => 'DUAL' } ] ];
+      return [
+         [ { context => $query_type, table => $self->{constant_data_value} } ]
+      ];
    }
 
    my $where;
@@ -3919,7 +3923,7 @@ sub _get_tables_used_from_query_struct {
          else {
             my $table_usage = {
                context => 'SELECT',
-               table   => 'DUAL',
+               table   => $self->{constant_data_value},
             };
             MKDEBUG && _d("Table usage from SET/VALUES:", Dumper($table_usage));
             push @{$tables_used[0]}, $table_usage;
@@ -3934,7 +3938,8 @@ sub _get_tables_used_from_query_struct {
          foreach my $table ( @$set_tables ) {
             my $table_usage = {
                context => 'SELECT',
-               table   => $table->{value_is_table} ? $table->{table} : 'DUAL',
+               table   => $table->{value_is_table} ? $table->{table}
+                        :                            $self->{constant_data_value},
             };
             MKDEBUG && _d("Table usage from SET:", Dumper($table_usage));
             push @{$tables_used[0]}, $table_usage;
@@ -4086,7 +4091,7 @@ sub _get_tables_used_in_where {
 
       if ( $is_constant || $n_vals == 2 ) {
          MKDEBUG && _d("Condition is a constant or two values");
-         $filter_tables{'DUAL'} = undef;
+         $filter_tables{$self->{constant_data_value}} = undef;
       }
       else {
          if ( @tables == 1 ) {
@@ -4128,7 +4133,7 @@ sub _get_tables_used_in_set {
       );
       $tables[0] = {
          table => $table,
-         value => 'DUAL'
+         value => $self->{constant_data_value}
       };
    }
    else {
@@ -4140,7 +4145,7 @@ sub _get_tables_used_in_set {
             tbl => $cond->{tbl},
          );
 
-         my $value          = 'DUAL';
+         my $value          = $self->{constant_data_value};
          my $value_is_table = 0;
          if ( $sql_parser->is_identifier($cond->{value}) ) {
             my $ident_struct = $sql_parser->parse_identifier(
@@ -4940,7 +4945,11 @@ sub main {
    my $qp = new QueryParser();
    my $qr = new QueryRewriter(QueryParser => $qp);
    my $sp = new SQLParser();
-   my $tu = new TableUsage(QueryParser => $qp, SQLParser => $sp);
+   my $tu = new TableUsage(
+      constant_data_value => $o->get('constant-data-value'),
+      QueryParser         => $qp,
+      SQLParser           => $sp,
+   );
    my %common_modules = (
       OptionParser  => $o,
       DSNParser     => $dp,
@@ -5643,6 +5652,23 @@ type: Array
 Read this comma-separated list of config files; if specified, this must be the
 first option on the command line.
 
+=item --constant-data-value
+
+type: string; default: DUAL
+
+Value to print for constant data.  Constant data means all data not
+from tables (or subqueries since subqueries are not supported).  For example,
+real constant values like strings ("foo") and numbers (42), and data from
+functions like C<NOW()>.  For example, in the query
+C<INSERT INTO t (c) VALUES ('a')>, the string 'a' is constant data, so the
+table usage report is:
+
+  INSERT t
+  SELECT DUAL
+
+The first line indicates that data is inserted into table C<t> and the second
+line indicates that that data comes from some constant value.
+
 =item --[no]continue-on-error
 
 default: yes
@@ -5978,7 +6004,7 @@ Feedback and improvements are welcome.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
-MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
