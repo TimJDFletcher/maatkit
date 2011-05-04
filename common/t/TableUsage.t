@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 23;
+use Test::More tests => 24;
 
 use MaatkitTest;
 use QueryParser;
@@ -506,6 +506,36 @@ test_get_table_usage(
       ],
    ],
    "DROP TABLE IF EXISTS"
+);
+
+# #############################################################################
+# Change DUAL to something else.
+# #############################################################################
+$ta = new TableUsage(
+   QueryParser => $qp,
+   SQLParser   => $sp,
+   value_for_constant => '<const>',
+);
+
+test_get_table_usage(
+   "INSERT INTO d.t (col1, col2) VALUES ('a', 'b')",
+   [
+      [
+         { context => 'INSERT',
+           table   => 'd.t',
+         },
+         { context => 'SELECT',
+           table   => '<const>',
+         },
+      ],
+   ],
+   "Change value_for_constant"
+); 
+
+# Restore original TableUsage obj for other tests.
+$ta = new TableUsage(
+   QueryParser => $qp,
+   SQLParser   => $sp,
 );
 
 # #############################################################################
