@@ -4108,7 +4108,7 @@ sub _d {
 package mk_online_schema_change;
 
 use English qw(-no_match_vars);
-use Time::HiRes qw(usleep);
+use Time::HiRes qw(sleep);
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
@@ -4138,16 +4138,22 @@ sub main {
    my $dp = $o->DSNParser();
    $dp->prop('set-vars', $o->get('set-vars'));
 
-   $quiet = $o->get('quiet');
+   $quiet = $o->get('quiet');  # for msg()
 
-   # Figure out which cmd line args are files (if any) and which is
-   # the DSN (if any).
-   my $dsn = shift @ARGV;
+   my ($dsn, $db, $old_tbl);
+   $dsn = shift @ARGV;
    if ( !$dsn ) {
-      $o->save_error('A DSN with a t part must be specified') if $dsn;
+      $o->save_error('A DSN with a t part must be specified');
    }
-   $dsn = $dp->parse($dsn, $dp->parse_options($o));
-   my ($db, $old_tbl) = $q->split_unquote($dsn->{t} || "", $dsn->{D} || "");
+   else {
+      $dsn = $dp->parse($dsn, $dp->parse_options($o));
+      if ( !$dsn->{t} ) {
+         $o->save_error('The DSN must specify a t (table) part');
+      }
+      else {
+         ($db, $old_tbl) = $q->split_unquote($dsn->{t} || "", $dsn->{D} || "");
+      }
+   }
 
    my $rename_fk_method = lc $o->get('update-foreign-keys-method');
    if ( ($rename_fk_method || '') eq 'drop_old_table' ) {
@@ -4156,13 +4162,13 @@ sub main {
    }
 
    if ( !$o->get('help') ) {
+      if ( @ARGV ) {
+         $o->save_error('Specify only one DSN on the command line');
+      }
+
       if ( !$db ) {
          $o->save_error("No database was specified in the DSN or by "
             . "--database (-D)");
-      }
-
-      if ( !$dsn->{t} ) {
-         $o->save_error('The DSN must specify a t (table) part');
       }
 
       if ( $old_tbl && $old_tbl eq ($o->get('new-table') || "") ) {
@@ -4259,18 +4265,16 @@ sub main {
       dbh   => $dbh,
       msg   => \&msg,  # so plugin can talk back to user
       print => $o->get('print'),
-      where => $o->get('where'),
       %tables,
       %common_modules,
    );
 
    if ( my $sleep_time = $o->get('sleep') ) {
       MKDEBUG && _d("Sleep time:", $sleep_time);
-      $sleep_time *= 1_000_000;  # convert to microseconds
       $plugin_args{sleep} = sub {
          my ( $chunkno ) = @_;
          MKDEBUG && _d("Sleeping after chunk", $chunkno);
-         usleep($sleep_time);
+         sleep($sleep_time);
       };
    }
 
@@ -4323,7 +4327,6 @@ sub main {
       tbl        => $old_tbl,
       chunk_col  => $chunk->{column},
       tbl_struct => $tables{old_tbl_struct},
-      where      => $o->get('where'),
    );
    my @chunks = $chunker->calculate_chunks(
       dbh        => $dbh,
@@ -4331,7 +4334,6 @@ sub main {
       tbl        => $old_tbl,
       chunk_col  => $chunk->{column},
       tbl_struct => $tables{old_tbl_struct},
-      where      => $o->get('where'),
       chunk_size => $o->get('chunk-size'),
       %range_stats,
    );
@@ -4734,7 +4736,10 @@ whether known or unknown, of using this tool.  The two main categories of risks
 are those created by the nature of the tool (e.g. read-only tools vs. read-write
 tools) and those created by bugs.
 
-Tables with foreign key constraints are not currently supported/tested.
+mk-online-schema-change reads, writes, alters and drops tables.  Although
+it is tested, do not use it in production until you have thoroughly tested it
+in your environment!
+
 This tool has not been tested with replication; it may break replication.
 
 At the time of this release there are no known bugs that pose a serious risk.
@@ -4793,12 +4798,12 @@ C<RENAME TABLE> respectively for these phases.
 
 Here are options related to each phase:
 
-  1. L<"--[no]create-new-table">, C<"--alter-new-table">, L<"--new-table">
+  1. --[no]create-new-table, --alter-new-table, --new-table
   2. (none)
-  3. L<"--chunk-size">, L<"--sleep">
+  3. --chunk-size, --sleep
   4. (none)
-  5. L<"--[no]rename-tables">
-  6. L<"--drop-old-table">
+  5. --[no]rename-tables
+  6. --drop-old-table
 
 Options L<"--exit-after-checks"> and L<"--print"> are helpful to see what
 the tool might do before actually doing it.
@@ -4836,7 +4841,9 @@ Prompt for a password when connecting to MySQL.
 
 default: yes
 
-Enable binary logging (C<SET SQL_LOG_BIN=1>).
+Allow binary logging (C<SET SQL_LOG_BIN=1>).  Specifying C<--no-bin-log>
+will C<SET SQL_LOG_BIN=0> and prevent queries executed by this tool from
+being replicated.
 
 =item --charset
 
@@ -5101,12 +5108,6 @@ User for login if not current user.
 =item --version
 
 Show version and exit.
-
-=item --where
-
-type: string
-
-WHERE condition to limit chunking range.  See also L<"--chunk-size">.
 
 =back
 
