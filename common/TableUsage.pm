@@ -52,7 +52,7 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   SQLParser   - <SQLParser> object
 #
 # Optional Arguments:
-#   value_for_constant - Value for constants, default "DUAL".
+#   constant_data_value - Value for constants, default "DUAL".
 #
 # Returns:
 #   TableUsage object
@@ -65,7 +65,7 @@ sub new {
 
    my $self = {
       # defaults
-      value_for_constant => 'DUAL',
+      constant_data_value => 'DUAL',
 
       # override defaults
       %args,
@@ -196,7 +196,7 @@ sub _get_tables_used_from_query_struct {
    if ( !$tables || @$tables == 0 ) {
       MKDEBUG && _d("Query does not use any tables");
       return [
-         [ { context => $query_type, table => $self->{value_for_constant} } ]
+         [ { context => $query_type, table => $self->{constant_data_value} } ]
       ];
    }
 
@@ -387,7 +387,7 @@ sub _get_tables_used_from_query_struct {
          else {
             my $table_usage = {
                context => 'SELECT',
-               table   => $self->{value_for_constant},
+               table   => $self->{constant_data_value},
             };
             MKDEBUG && _d("Table usage from SET/VALUES:", Dumper($table_usage));
             push @{$tables_used[0]}, $table_usage;
@@ -403,7 +403,7 @@ sub _get_tables_used_from_query_struct {
             my $table_usage = {
                context => 'SELECT',
                table   => $table->{value_is_table} ? $table->{table}
-                        :                            $self->{value_for_constant},
+                        :                            $self->{constant_data_value},
             };
             MKDEBUG && _d("Table usage from SET:", Dumper($table_usage));
             push @{$tables_used[0]}, $table_usage;
@@ -561,7 +561,7 @@ sub _get_tables_used_in_where {
 
       if ( $is_constant || $n_vals == 2 ) {
          MKDEBUG && _d("Condition is a constant or two values");
-         $filter_tables{$self->{value_for_constant}} = undef;
+         $filter_tables{$self->{constant_data_value}} = undef;
       }
       else {
          if ( @tables == 1 ) {
@@ -604,7 +604,7 @@ sub _get_tables_used_in_set {
       );
       $tables[0] = {
          table => $table,
-         value => $self->{value_for_constant}
+         value => $self->{constant_data_value}
       };
    }
    else {
@@ -616,7 +616,7 @@ sub _get_tables_used_in_set {
             tbl => $cond->{tbl},
          );
 
-         my $value          = $self->{value_for_constant};
+         my $value          = $self->{constant_data_value};
          my $value_is_table = 0;
          if ( $sql_parser->is_identifier($cond->{value}) ) {
             my $ident_struct = $sql_parser->parse_identifier(

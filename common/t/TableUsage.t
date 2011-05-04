@@ -514,7 +514,7 @@ test_get_table_usage(
 $ta = new TableUsage(
    QueryParser => $qp,
    SQLParser   => $sp,
-   value_for_constant => '<const>',
+   constant_data_value => '<const>',
 );
 
 test_get_table_usage(
@@ -529,7 +529,7 @@ test_get_table_usage(
          },
       ],
    ],
-   "Change value_for_constant"
+   "Change constant_data_value"
 ); 
 
 # Restore original TableUsage obj for other tests.
