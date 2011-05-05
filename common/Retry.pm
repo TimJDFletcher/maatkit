@@ -74,7 +74,7 @@ sub retry {
 
       if ( $EVAL_ERROR ) {
          MKDEBUG && _d("Try code died:", $EVAL_ERROR);
-         return unless $args{retry_on_die};
+         die $EVAL_ERROR unless $args{retry_on_die};
       }
 
       # Wait if there's more retries, else end immediately.
