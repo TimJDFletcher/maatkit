@@ -5250,7 +5250,7 @@ installed in any reasonably new version of Perl.
 
 =head1 BUGS
 
-For list of known bugs see L<http://www.maatkit.org/bugs/mk-online-schema-change>.
+For a list of known bugs see L<http://www.maatkit.org/bugs/mk-online-schema-change>.
 
 Please use Google Code Issues and Groups to report bugs or request support:
 L<http://code.google.com/p/maatkit/>.  You can also join #maatkit on Freenode to
@@ -5288,10 +5288,10 @@ Daniel Nichter
 
 The "online schema change" concept was first implemented by Shlomi Noach
 in his tool C<oak-online-alter-table>, part of
-L<http://code.google.com/p/openarkkit/>.  Then, engineers at Facebook built
-their version called C<OnlineSchemaChange.php>; see
-L<http://www.facebook.com/notes/mysql-at-facebook/online-schema-change-for-mysql/430801045932>.  Searching for "online schema change" will return other
-relevant pages about this concept.
+L<http://code.google.com/p/openarkkit/>.  Then engineers at Facebook built
+their version called C<OnlineSchemaChange.php> as explained by their blog
+post: L<http://tinyurl.com/32zeb86>.  Searching for "online schema change"
+will return other relevant pages about this concept.
 
 This implementation, C<mk-online-schema-change>, is a hybrid of Shlomi's
 and Facebook's approach.  Shlomi's code is a full-featured tool with command
