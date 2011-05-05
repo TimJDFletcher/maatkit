@@ -4,6 +4,9 @@ BEGIN {
    die "The MAATKIT_WORKING_COPY environment variable is not set.  See http://code.google.com/p/maatkit/wiki/Testing"
       unless $ENV{MAATKIT_WORKING_COPY} && -d $ENV{MAATKIT_WORKING_COPY};
    unshift @INC, "$ENV{MAATKIT_WORKING_COPY}/common";
+
+   # The timestamps for unix_timestamp are East Coast (EST), so GMT-4.
+   $ENV{TZ}='EST5EDT';
 };
 
 use strict;
