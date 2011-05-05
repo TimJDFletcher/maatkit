@@ -4355,7 +4355,7 @@ sub main {
    # #####################################################################
    # Do the online alter.
    # #####################################################################
-   msg("Beginning online schema change");
+   msg("Starting online schema change");
    eval {
       my $sql = "";
       
@@ -4544,17 +4544,6 @@ sub check_tables {
          . "its own triggers, so the table cannot already have triggers.\n";
    }
 
-   # If we're going to rename the tables, which we do by default, then
-   # the old table cannot already exist.
-   if ( $o->get('rename-tables') ) {
-      if ( $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$old_tbl) ) {
-         die "Table $db.$old_tbl exists which will prevent $db.$tbl "
-            . "from being renamed to it.  Table $db.$old_tbl could be from "
-            . "a previous run that failed.  See --drop-old-table for more "
-            . "information.\n";
-      }
-   }
-
    # For now, we require that the old table has an exact-chunkable
    # column (i.e. unique single-column).
    $tbl_info{tbl_struct} = $tp->parse(
@@ -4578,7 +4567,21 @@ sub check_tables {
    # that it exists.
    if ( $o->get('create-tmp-table')
         && $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$tmp_tbl) ) {
-      die "Temporary table $db.$tmp_tbl exists.  Drop it and try again.\n";
+      die "Temporary table $db.$tmp_tbl exists which will prevent "
+         . "--create-tmp-table from creating the temporary table.\n";
+   }
+
+   # ########################################################################
+   # Check the old table.
+   # ########################################################################   
+   # If we're going to rename the tables, which we do by default, then
+   # the old table cannot already exist.
+   if ( $o->get('rename-tables')
+        && $tp->check_table(dbh=>$dbh, db=>$db, tbl=>$old_tbl) ) {
+      die "Table $db.$old_tbl exists which will prevent $db.$tbl "
+         . "from being renamed to it.  Table $db.$old_tbl could be from "
+         . "a previous run that failed.  See --drop-old-table for more "
+         . "information.\n";
    }
 
    return %tbl_info;
@@ -4758,6 +4761,7 @@ it is tested, do not use it in production until you have thoroughly tested it
 in your environment!
 
 This tool has not been tested with replication; it may break replication.
+See L<"REPLICATION">.
 
 At the time of this release there are no known bugs that pose a serious risk.
 
@@ -4779,6 +4783,10 @@ tool only works with MySQL 5.0.2 and newer.
 The table to alter is specified by the DSN C<t> part on the command line,
 as shown in the L<"SYNOPSIS"> examples.  A database must also be specified
 either by the DSN C<D> part or by the L<"--database"> option.
+
+If you're using replication, read L<"REPLICATION"> or else you may break
+replication.  Performing an online schema change in a replication environment
+requires extra planning and care.
 
 In brief, this tool works by creating a temporary table which is a copy of
 the original table (the one being altered).  (The temporary table is not
@@ -4840,6 +4848,11 @@ Here are options related to each phase:
 Options L<"--check-tables-and-exit"> and L<"--print"> are helpful to see what
 the tool might do before actually doing it.
 
+=head1 REPLICATION
+
+In brief: update slaves first if columns are added or removed.  Certain
+ALTER changes like ENGINE may not affect replication.
+
 =head1 OUTPUT
 
 Output to STDOUT is very verbose and should tell you everything that the
@@ -4869,13 +4882,13 @@ applied in the order it appears in the file.
 
 Prompt for a password when connecting to MySQL.
 
-=item --[no]bin-log
+=item --bin-log
 
-default: yes
-
-Allow binary logging (C<SET SQL_LOG_BIN=1>).  Specifying C<--no-bin-log>
-will C<SET SQL_LOG_BIN=0> and prevent queries executed by this tool from
-being replicated.
+Allow binary logging (C<SET SQL_LOG_BIN=1>).  By default binary logging is
+turned off because in most cases the L<"--tmp-table"> does not need to
+be replicated.  Also, performing an online schema change in a replication
+environment requires careful planning else replication may be broken;
+see L<"REPLICATION">.
 
 =item --charset
 
