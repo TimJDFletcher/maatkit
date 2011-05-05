@@ -5438,7 +5438,7 @@ is printed to STDOUT.
 
 =head1 RISKS
 
-mk-table-use is very log risk because it only reads and examines queries from
+mk-table-use is very low risk because it only reads and examines queries from
 a log and executes C<EXPLAIN EXTENDED> if the L<"--explain-extended"> option
 is specified.
 
@@ -5471,9 +5471,9 @@ multiple tables and the columns are not table-qualified, then that creates a
 problem that can only be solved by knowing the query's database and specifying
 L<"--explain-extended">.  If the slow log does not specify the database
 used by the query, then you can specify a default database with L<"--database">.
-Else, there is no way to know or guess the database, so the query will be
+There is no other way to know or guess the database, so the query will be
 skipped.  Secondly, if the database is known, then specifying
-L<"--explain-extended"> causes mk-table-uses do C<EXPLAIN EXTENDED ...>
+L<"--explain-extended"> causes mk-table-usage to do C<EXPLAIN EXTENDED ...>
 C<SHOW WARNINGS> to get the fully qualified query as reported by MySQL
 (i.e. all identifiers are fully database- and/or table-qualified).  For
 best results, you should specify L<"--explain-extended"> and
@@ -5487,7 +5487,8 @@ for more information.
 
 =head1 OUTPUT
 
-A table usage report is printed for each query that looks like:
+The table usage report that is printed for each query looks similar to the
+following:
 
   Query_id: 0x1CD27577D202A339.1
   UPDATE t1
@@ -5510,11 +5511,11 @@ separated by a period: the query ID and the target table number.
 
 If L<"--id-attribute"> is not specified, then query IDs are automatically
 created by making an MD5 hex checksum of the query's fingerprint
-(as shown above, e.g. C<0x1CD27577D202A339>); else, the query ID is the query's
-value for the given attribute.
+(as shown above, e.g. C<0x1CD27577D202A339>); otherwise, the query ID is the
+query's value for the given attribute.
 
 The target table number starts at 1 and increments by 1 for each table that
-the query ID affects.  Only multi-table UPDATE queries can affect
+the query affects.  Only multi-table UPDATE queries can affect
 multiple tables with a single query, so this number is 1 for all other types
 of queries.  (Multi-table DELETE queries are not supported.)
 The example output above is from this query:
@@ -5523,10 +5524,10 @@ The example output above is from this query:
   SET a.foo="bar", b.foo="bat"
   WHERE a.id=1;
 
-The C<SET> clause indicates that two tables are updated: C<a> or C<t1> and
-C<b> or C<t2>.  So two usage reports are printed, one for each table, and
-this is indicated in the output by their common query ID but incrementing
-target table number.
+The C<SET> clause indicates that two tables are updated: C<a> aliased as C<t1>,
+and C<b> aliased as C<t2>.  So two usage reports are printed, one for each
+table, and this is indicated in the output by their common query ID but
+incrementing target table number.
 
 After the first line is a variable number of CONTEXT-TABLE lines.  Possible
 contexts are:
@@ -5549,9 +5550,9 @@ This refers to:
 
   SET a.foo="bar", b.foo="bat"
 
-DUAL is used for any values not from tables, in this case "bar" and "bat".
-If that C<SET> clause was C<SET a.foo=b.foo> instead, then the complete
-usage would be:
+DUAL is used for any values that does not originate in a table, in this case the
+literal values "bar" and "bat".  If that C<SET> clause were C<SET a.foo=b.foo>
+instead, then the complete usage would be:
 
   Query_id: 0x1CD27577D202A339.1
   UPDATE t1
@@ -5560,21 +5561,21 @@ usage would be:
   JOIN t2
   WHERE t1
 
-The presence of a SELECT context after another context like UPDATE or
-INSERT indicates where the UPDATE or INSERT is reading data.  The example
+The presence of a SELECT context after another context, such as UPDATE or
+INSERT, indicates where the UPDATE or INSERT retrieves its data.  The example
 immediately above reflects an UPDATE query that updates rows in table C<t1>
 with data from table C<t2>.
 
 =item * Any other query type
 
-Any other query type like INSERT, UPDATE, DELETE, etc. may be a context.
+Any other query type, such as INSERT, UPDATE, DELETE, etc. may be a context.
 All these types indicate that the table is written or altered in some way.
 If a SELECT context follows one of these types, then data is read from the
 SELECT table and written to this table.  This happens, for example, with
 INSERT..SELECT or UPDATE queries that set column values using values from
 tables instead of constant values.
 
-These query types are not supported
+These query types are not supported:
 
   SET
   LOAD
@@ -5582,14 +5583,14 @@ These query types are not supported
 
 =item * JOIN
 
-The JOIN context lists tables that are joined either with an explicit JOIN
-in the FROM clause or implicitly in the WHERE clause like C<t1.id = t2.id>.
+The JOIN context lists tables that are joined, either with an explicit JOIN in
+the FROM clause, or implicitly in the WHERE clause, such as C<t1.id = t2.id>.
 
 =item * WHERE
 
 The WHERE context lists tables that are used in the WHERE clause to filter
 results.  This does not include tables that are implicitly joined in the
-WHERE clause; those are listed as a JOIN contexts.  For example:
+WHERE clause; those are listed as JOIN contexts.  For example:
 
   WHERE t1.id > 100 AND t1.id < 200 AND t2.foo IS NOT NULL
 
@@ -5598,7 +5599,7 @@ Results in:
   WHERE t1
   WHERE t2
 
-Only unique tables are listed; that is why table C<t1> is only listed once.
+Only unique tables are listed; that is why table C<t1> is listed only once.
 
 =item * TLIST
 
@@ -5613,16 +5614,16 @@ C<SELECT * FROM t1, t2> results in:
   TLIST t1
   TLIST t2
 
-First of all, there are two SELECT contexts because C<SELECT *> selects
-rows from all tables, C<t1> and C<t2> in this case.  Secondly, the tables
-are implicitly joined but without any kind of join condition which results
+First of all, there are two SELECT contexts, because C<SELECT *> selects
+rows from all tables; C<t1> and C<t2> in this case.  Secondly, the tables
+are implicitly joined, but without any kind of join condition, which results
 in a full cartesian join as indicated by the TLIST context for each.
 
 =back
 
 =head1 EXIT STATUS
 
-mk-table-usage exits 1 on any kind of error, else 0 if no errors.
+mk-table-usage exits 1 on any kind of error, or 0 if no errors.
 
 =head1 OPTIONS
 
