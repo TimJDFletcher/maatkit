@@ -1,5 +1,7 @@
 Changelog for mk-table-checksum and mk-checksum-filter:
 
+2011-05-05: version 1.2.22
+
    * --recurse did not work (issue 1039).
 
 2011-04-04: version 1.2.21
