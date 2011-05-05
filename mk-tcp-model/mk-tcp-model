@@ -1560,7 +1560,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SimpleTCPDumpParser package 7441
+# SimpleTCPDumpParser package 7472
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SimpleTCPDumpParser.pm
@@ -1660,7 +1660,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TCPRequestAggregator package 7450
+# TCPRequestAggregator package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TCPRequestAggregator.pm

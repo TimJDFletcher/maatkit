@@ -1831,7 +1831,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryParser package 7379
+# QueryParser package 7452
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryParser.pm
@@ -1877,7 +1877,7 @@ sub get_tables {
    my ( $ddl_stmt ) = $query =~ m/^\s*($data_def_stmts)\b/i;
    if ( $ddl_stmt ) {
       MKDEBUG && _d('Special table type:', $ddl_stmt);
-      $query =~ s/IF NOT EXISTS//i;
+      $query =~ s/IF\s+(?:NOT\s+)?EXISTS//i;
       if ( $query =~ m/$ddl_stmt DATABASE\b/i ) {
          MKDEBUG && _d('Query alters a database, not a table');
          return ();
@@ -2235,7 +2235,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryRewriter package 7300
+# QueryRewriter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryRewriter.pm
@@ -3265,7 +3265,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# QueryAdvisorRules package 7428
+# QueryAdvisorRules package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/QueryAdvisorRules.pm
@@ -4023,7 +4023,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7427
+# SQLParser package 7433
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -4528,7 +4528,7 @@ sub parse_where {
 
       if ( $col ) {
          $col =~ s/\s+$//;
-         $col =~ s/^\(//;  # no unquoted column name begins with (
+         $col =~ s/^\(+//;  # no unquoted column name begins with (
       }
       if ( $op ) {
          $op  =  lc $op;
@@ -4536,8 +4536,14 @@ sub parse_where {
          $op  =~ s/\s+$//;
       }
       $val =~ s/^\s+//;
-      $val =~ s/\)$// if ($op || '') !~ m/in/i && $val !~ m/^\w+\([^\)]+\)$/;
-      $val =  lc $val if $val =~ m/NULL|TRUE|FALSE/i;
+      
+      if ( ($op || '') !~ m/IN/i && $val !~ m/^\w+\([^\)]+\)$/ ) {
+         $val =~ s/\)+$//;
+      }
+
+      if ( $val =~ m/NULL|TRUE|FALSE/i ) {
+         $val = lc $val;
+      }
 
       push @predicates, {
          predicate => $conj,
@@ -5617,7 +5623,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ReportFormatter package 7359
+# ReportFormatter package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ReportFormatter.pm

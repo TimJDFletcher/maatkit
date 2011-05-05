@@ -1932,14 +1932,13 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Retry package 7096
+# Retry package 7473
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Retry.pm
 #   trunk/common/t/Retry.t
 # See http://code.google.com/p/maatkit/wiki/Developers for more information.
 # ###########################################################################
-
 package Retry;
 
 use strict;
@@ -1983,7 +1982,7 @@ sub retry {
 
       if ( $EVAL_ERROR ) {
          MKDEBUG && _d("Try code died:", $EVAL_ERROR);
-         return unless $args{retry_on_die};
+         die $EVAL_ERROR unless $args{retry_on_die};
       }
 
       if ( $tryno < $tries ) {
