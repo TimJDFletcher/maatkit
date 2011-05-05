@@ -8234,7 +8234,7 @@ Re-checksum chunks that L<"--replicate-check"> found to be different.
 
 =item --recurse
 
-group: Throttle
+type: int; group: Throttle
 
 Number of levels to recurse in the hierarchy when discovering slaves.
 Default is infinite.

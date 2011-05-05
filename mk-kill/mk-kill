@@ -4639,6 +4639,8 @@ are at least this many queries in the entire SHOW PROCESSLIST.
 
 =item --verbose
 
+short form: -v
+
 Print information to STDOUT about what is being done.
 
 =back

@@ -3126,6 +3126,8 @@ Port number to use for connection.
 
 =item --recurse
 
+type: int
+
 Number of levels to recurse in the hierarchy.  Default is infinite.
 
 See L<"--recursion-method">.
