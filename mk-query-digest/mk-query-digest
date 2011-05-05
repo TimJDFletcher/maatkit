@@ -15535,7 +15535,7 @@ The parser expects the input to be formatted with the following options: C<-x -n
 -q -tttt>.  For example, if you want to capture output from your local machine,
 you can do something like the following (the port must come last on FreeBSD):
 
-  tcpdump -s 65535 -x -nn -q -tttt -i eth0 -c 1000 port 3306 \
+  tcpdump -s 65535 -x -nn -q -tttt -i any -c 1000 port 3306 \
     > mysql.tcp.txt
   mk-query-digest --type tcpdump mysql.tcp.txt
 
@@ -15552,6 +15552,16 @@ Remember tcpdump has a handy -c option to stop after it captures some number of
 packets!  That's very useful for testing your tcpdump command.  Note that
 tcpdump can't capture traffic on a Unix socket.  Read
 L<http://bugs.mysql.com/bug.php?id=31577> if you're confused about this.
+
+Devananda Van Der Veen explained on the MySQL Performance Blog how to capture
+traffic without dropping packets on busy servers.  Dropped packets cause
+mk-query-digest to miss the response to a request, then see the response to a
+later request and assign the wrong execution time to the query.  You can change
+the filter to something like the following to help capture a subset of the
+queries.  (See L<http://www.mysqlperformanceblog.com/?p=6092> for details.)
+
+  tcpdump -i any -s 65535 -x -n -q -tttt \
+     'port 3306 and tcp[1] & 7 == 2 and tcp[3] & 7 == 2'
 
 All MySQL servers running on port 3306 are automatically detected in the
 tcpdump output.  Therefore, if the tcpdump out contains packets from
@@ -15576,7 +15586,7 @@ inspected and decoded.
 Similar to tcpdump, but the expected input is memcached packets
 instead of MySQL packets.  For example:
 
-  tcpdump -i eth0 port 11211 -s 65535 -x -nn -q -tttt \
+  tcpdump -i any port 11211 -s 65535 -x -nn -q -tttt \
     > memcached.tcp.txt
   mk-query-digest --type memcached memcached.tcp.txt
 
