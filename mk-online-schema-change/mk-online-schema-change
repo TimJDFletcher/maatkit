@@ -4999,21 +4999,6 @@ short form: -h; type: string
 
 Connect to host.
 
-=item --tmp-table
-
-type: string
-
-Temporary table if C<--no-create-tmp-table> is specified.  If you specify
-C<--no-create-tmp-table>, then you must also specify this option to tell
-the tool which table to use as the temporary table.  The temporary table
-and the original table are renamed/swapped unless C<--no-rename-tables> is
-specified.
-
-The default behavior, when this option is not specified and
-C<--[no]create-tmp-tble> is true, is to create a temporary table named
-C<__tmp_TABLE> where C<TABLE> is the original table specified by the DSN
-on the command line.
-
 =item --password
 
 short form: -p; type: string
@@ -5056,6 +5041,51 @@ short form: -q
 
 Do not print messages to STDOUT.  Errors and warnings are still printed to
 STDERR.
+
+=item --[no]rename-tables
+
+default: yes
+
+Rename/swap the original table and the L<"--tmp-table">.  This option
+essentially completes the online schema change process by making the
+temporary table with the new schema take the place of the original table.
+The original tables becomes the "old table" and is dropped if
+L<"--drop-old-table"> is specified.
+
+=item --set-vars
+
+type: string; default: wait_timeout=10000
+
+Set these MySQL variables.  Immediately after connecting to MySQL, this string
+will be appended to SET and executed.
+
+=item --sleep
+
+type: float; default: 0
+
+How long to sleep between chunks while copying rows.  The time has micro-second
+precision, so you can specify fractions of seconds like C<0.1>.
+
+=item --socket
+
+short form: -S; type: string
+
+Socket file to use for connection.
+
+=item --tmp-table
+
+type: string
+
+Temporary table if C<--no-create-tmp-table> is specified.  If you specify
+C<--no-create-tmp-table>, then you must also specify this option to tell
+the tool which table to use as the temporary table.  The temporary table
+and the original table are renamed/swapped unless C<--no-rename-tables> is
+specified.
+
+The default behavior, when this option is not specified and
+C<--[no]create-tmp-tble> is true, is to create a temporary table named
+C<__tmp_TABLE> where C<TABLE> is the original table specified by the DSN
+on the command line.
 
 =item --update-foreign-keys-method
 
@@ -5113,35 +5143,6 @@ because it was dropped.
 
 =back
 
-=item --[no]rename-tables
-
-default: yes
-
-Rename/swap the original table and the L<"--tmp-table">.  This option
-essentially completes the online schema change process by making the
-temporary table with the new schema take the place of the original table.
-The original tables becomes the "old table" and is dropped if
-L<"--drop-old-table"> is specified.
-
-=item --set-vars
-
-type: string; default: wait_timeout=10000
-
-Set these MySQL variables.  Immediately after connecting to MySQL, this string
-will be appended to SET and executed.
-
-=item --sleep
-
-type: float; default: 0
-
-How long to sleep between chunks while copying rows.  The time has micro-second
-precision, so you can specify fractions of seconds like C<0.1>.
-
-=item --socket
-
-short form: -S; type: string
-
-Socket file to use for connection.
 
 =item --user
 
