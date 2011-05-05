@@ -38,17 +38,17 @@ $sb->load_file('master', "mk-online-schema-change/t/samples/small_table.sql");
 $dbh->do('use mkosc');
 
 # #############################################################################
-# --exit-after-checks
+# --check-tables-and-exit
 # #############################################################################
 eval {
    $exit = mk_online_schema_change::main(@args,
-      'D=mkosc,t=a', qw(--exit-after-checks --quiet))
+      'D=mkosc,t=a', qw(--check-tables-and-exit --quiet))
 };
 
 is(
    $EVAL_ERROR,
    "",
-   "--exit-after-checks"
+   "--check-tables-and-exit"
 );
 
 is(
@@ -83,7 +83,7 @@ is(
 
 output(
    sub { $exit = mk_online_schema_change::main(@args,
-      'D=mkosc,t=a', qw(--alter-new-table ENGINE=InnoDB)) },
+      'D=mkosc,t=a', qw(--alter ENGINE=InnoDB)) },
 );
 
 $rows = $dbh->selectall_hashref('show table status from mkosc', 'name');
@@ -114,7 +114,7 @@ is(
 );
 
 # #############################################################################
-# No --alter-new-table and --drop-old-table.
+# No --alter and --drop-old-table.
 # #############################################################################
 $dbh->do('drop table mkosc.__old_a');  # from previous run
 $sb->load_file('master', "mk-online-schema-change/t/samples/small_table.sql");
@@ -128,7 +128,7 @@ $rows = $dbh->selectall_hashref('show table status from mkosc', 'name');
 is(
    $rows->{a}->{engine},
    'MyISAM',
-   "No --alter-new-table, new table still ENGINE=MyISAM"
+   "No --alter, new table still ENGINE=MyISAM"
 );
 
 ok(

@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 6;
+   plan tests => 8;
 }
 
 my $vp      = new VersionParser();
@@ -43,61 +43,70 @@ $dbh->do('use mkosc');
 my $old_tbl_struct = $tp->parse($du->get_create_table($dbh, $q, 'mkosc', 'a'));
 
 my %args = (
-   dbh               => $dbh,
-   old_table         => 'mkosc.a',
-   old_table_renamed => 'mkosc.__old_a',
-   old_tbl_struct    => $old_tbl_struct,
-   new_table         => 'mkosc.__new_a',
-   VersionParser     => $vp,
-   Quoter            => $q,
-   TableParser       => $tp,
-   OptionParser      => $o,
-   TableChunker      => $chunker,
+   dbh           => $dbh,
+   db            => 'mkosc',
+   tbl           => 'a',
+   tmp_tbl       => '__tmp_a',
+   old_tbl       => '__old_a',  # what tbl becomes after swapped with tmp_tbl
+   VersionParser => $vp,
+   Quoter        => $q,
+   TableParser   => $tp,
+   OptionParser  => $o,
+   TableChunker  => $chunker,
+   MySQLDump     => $du,
 );
 
-my $chunk = mk_online_schema_change::checks(%args);
-is_deeply(
-   $chunk,
-   {  column     => 'i',
-      index      => 'PRIMARY',
-      column_ddl => '  `i` int(11) NOT NULL ',
-   },
-   "checks() works"
+my %tbl_info = mk_online_schema_change::check_tables(%args);
+is(
+   $tbl_info{chunk_column},
+   "i",
+   "check_tables() returns chunk_column"
+);
+
+is(
+   $tbl_info{chunk_index},
+   "PRIMARY",
+   "check_tables() returns chunk_index"
+);
+
+ok(
+   exists $tbl_info{tbl_struct},
+   "check_tables() returns tbl_struct"
 );
 
 throws_ok(
-   sub { mk_online_schema_change::checks(
+   sub { mk_online_schema_change::check_tables(
       %args,
-      old_table => 'mkosc.does_not_exist'
+      tbl => 'does_not_exist'
    ) },
-   qr/The old table does not exist/,
-   "Old table must exist"
+   qr/Table mkosc.does_not_exist does not exist/,
+   "Table must exist"
 );
 
 @ARGV = qw(--rename-tables);
 $o->get_opts();
 throws_ok(
-   sub { mk_online_schema_change::checks(
+   sub { mk_online_schema_change::check_tables(
       %args,
-      old_table_renamed => 'mkosc.a',
+      old_tbl => 'a',
    ) },
-   qr/The old renamed table mkosc.a already exists/,
-   "Old renamed table cannot already exist if --rename-tables"
+   qr/Table mkosc.a exists which will prevent mkosc.a/,
+   "Old table cannot already exist if --rename-tables"
 );
 
 throws_ok(
-   sub { mk_online_schema_change::checks(
+   sub { mk_online_schema_change::check_tables(
       %args,
-      new_table => 'mkosc.a',
+      tmp_tbl => 'a',
    ) },
-   qr/The new table already exists/,
-   "New table cannot already exist"
+   qr/Temporary table mkosc.a exists/,
+   "Temporary table cannot already exist"
 );
 
 $dbh->do('CREATE TRIGGER foo AFTER DELETE ON mkosc.a FOR EACH ROW DELETE FROM mkosc.a WHERE 0');
 throws_ok(
-   sub { mk_online_schema_change::checks(%args) },
-   qr/The old table has triggers/,
+   sub { mk_online_schema_change::check_tables(%args) },
+   qr/Table mkosc.a has triggers/,
    "Old table cannot have triggers"
 );
 $dbh->do('DROP TRIGGER mkosc.foo');
@@ -105,14 +114,12 @@ $dbh->do('DROP TRIGGER mkosc.foo');
 $dbh->do('ALTER TABLE mkosc.a DROP COLUMN i');
 my $tmp_struct = $tp->parse($du->get_create_table($dbh, $q, 'mkosc', 'a'));
 throws_ok(
-   sub { mk_online_schema_change::checks(
+   sub { mk_online_schema_change::check_tables(
       %args,
-      old_tbl_struct => $tmp_struct,
    ) },
-   qr/The old table does not have a unique, single-column index/,
-   "Old table must have a chunkable index"
+   qr/Table mkosc.a cannot be chunked/,
+   "Table must have a chunkable index"
 );
-$sb->load_file('master', "mk-online-schema-change/t/samples/small_table.sql");
 
 # #############################################################################
 # Done.
