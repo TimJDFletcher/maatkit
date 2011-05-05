@@ -14,6 +14,7 @@ use Test::More tests => 5;
 use TCPRequestAggregator;
 use MaatkitTest;
 
+my $in = "common/t/samples/simple-tcprequests/";
 my $p;
 
 # Check that I can parse a simple log and aggregate it into 100ths of a second
@@ -21,7 +22,7 @@ $p = new TCPRequestAggregator(interval => '.01', quantile => '.99');
 # intervals.
 test_log_parser(
    parser => $p,
-   file   => 'common/t/samples/simpletcp-requests001.txt',
+   file   => "$in/simpletcp-requests001.txt",
    result => [
       {  ts            => '1301957863.82',
          concurrency   => '0.346932',
@@ -70,7 +71,7 @@ test_log_parser(
 $p = new TCPRequestAggregator(interval => '.01', quantile => '.99');
 test_log_parser(
    parser => $p,
-   file   => 'common/t/samples/simpletcp-requests002.txt',
+   file   => "$in/simpletcp-requests002.txt",
    result => [
       {  ts            => '1301957863.82',
          concurrency   => '0.353948',

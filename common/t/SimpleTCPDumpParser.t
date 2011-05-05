@@ -17,12 +17,14 @@ use Test::More tests => 3;
 use SimpleTCPDumpParser;
 use MaatkitTest;
 
+my $in = "common/t/samples/simple-tcpdump/"; 
+
 my $p = new SimpleTCPDumpParser(watch => ':3306');
 
 # Check that I can parse a log in the default format.
 test_log_parser(
    parser => $p,
-   file   => 'common/t/samples/simpletcp001.txt',
+   file   => "$in/simpletcp001.txt",
    result => [
       {  ts         => '1301957863.804195',
          id         => 0,
