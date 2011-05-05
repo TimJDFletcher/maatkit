@@ -79,6 +79,7 @@ sub copy {
          $msg->($sql);
       }
       else {
+         MKDEBUG && _d($dbh, $sql);
          my $error;
          $self->{Retry}->retry(
             wait  => sub { sleep 1; },
