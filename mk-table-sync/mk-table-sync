@@ -9525,7 +9525,7 @@ If the destination server is a slave, it's generally unsafe to make changes on
 it.  However, sometimes you have to; L<"--replace"> won't work unless there's a
 unique index, for example, so you can't make changes on the master in that
 scenario.  By default mk-table-sync will complain if you try to change data on
-a slave.  Specify C<--no-slave-check> to disable this check.  Use it at your own
+a slave.  Specify C<--no-check-slave> to disable this check.  Use it at your own
 risk.
 
 =item --[no]check-triggers
