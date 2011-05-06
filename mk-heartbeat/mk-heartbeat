@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 
-# This is mk-heartbeat, a script to measure replication delay.
+# This is mk-heartbeat, a tool to measure replication delay.
 #
 # This program is copyright 2007-@CURRENTYEAR@ Percona Inc.
 # and copyright 2006 Proven Scaling LLC and Six Apart Ltd.
