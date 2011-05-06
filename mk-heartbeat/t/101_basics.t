@@ -37,8 +37,8 @@ my $ps_grep_cmd = "ps x | grep mk-heartbeat | grep daemonize | grep -v grep";
 $dbh->do('drop table if exists test.heartbeat');
 $dbh->do(q{CREATE TABLE test.heartbeat (
              id int NOT NULL PRIMARY KEY,
-             ts datetime NOT NULL
-          )});
+             ts int unsigned NOT NULL
+          ) ENGINE=MEMORY});
 
 # Issue: mk-heartbeat should check that the heartbeat table has a row
 $output = `$cmd -D test --check 2>&1`;

@@ -3,7 +3,7 @@ CREATE DATABASE mk_heartbeat_test;
 USE mk_heartbeat_test;
 CREATE TABLE heartbeat (
   `id` smallint(5) unsigned NOT NULL,
-  `ts` varchar(16) NOT NULL,
+  `ts` float NOT NULL,
   `server_id` smallint(5) unsigned NOT NULL,
   `binlog_file` varchar(255) DEFAULT NULL,
   `binlog_pos` bigint(20) unsigned DEFAULT NULL,
