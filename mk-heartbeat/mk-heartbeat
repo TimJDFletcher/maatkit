@@ -2556,6 +2556,10 @@ my @sths;  # Holds [$host, $sth] if --recurse
 sub main {
    @ARGV = @_;  # set global ARGV for this package
 
+   # Reset all global vars between test runs else weird things happen.
+   @dbhs = ();
+   @sths = ();  
+
    # ########################################################################
    # Get configuration information.
    # ########################################################################
@@ -2563,8 +2567,13 @@ sub main {
    $o->get_specs();
    $o->get_opts();
 
-   if ( !$o->get('help') ) {
+   my $dp = $o->DSNParser;
+   $dp->prop('dbidriver', $o->get('dbi-driver'));
+   $dp->prop('set-vars', $o->get('set-vars'));
 
+   $o->set('interval', max($o->get('interval'), 1)); # Prevent 0-second interval
+
+   if ( !$o->get('help') ) {
       my @frames = $o->get('frames') =~ m/(\d+[smhd])/g;
       if ( @frames ) {
          my @times;
@@ -2593,18 +2602,23 @@ sub main {
       }
    }
 
-   $o->set('interval', max($o->get('interval'), 1)); # Prevent 0-second interval
-
    $o->usage_or_errors();
 
-   # Frequently used options.
+   # ########################################################################
+   # Make common modules and var for frequently used options.
+   # ########################################################################
+   my $q  = new Quoter();
+
    my $interval = $o->get('interval');
    my $sentinel = $o->get('sentinel');
-   my $table    = $o->get('table');
+   my $table    = $o->get('table');  # TODO: use $tbl instead
    my $frames   = $o->get('frames');
+   my $db       = $o->get('database');
+   my $tbl      = $o->get('table');
+   my $db_tbl   = $q->quote($db, $tbl);
 
    # ########################################################################
-   # First things first: if --stop was given, create the sentinel file.
+   # Create --sentinel file if --stop was given, and possibly exit.
    # ########################################################################
    if ( $o->get('stop') ) {
       MKDEBUG && _d('Creating sentinel file', $sentinel);
@@ -2634,43 +2648,23 @@ sub main {
    }
 
    # ########################################################################
-   # Work.
+   # Connect to MySQL.
    # ########################################################################
-   my $update_sql = $o->get('replace')
-                  ? "REPLACE INTO $table(id, ts) VALUES(1, NOW())"
-                  : "UPDATE $table SET ts = NOW() WHERE id = 1";
-   my $select_sql = "SELECT "
-                  . ( $o->get('dbi-driver') eq 'Pg'
-                     ? "ROUND(DATE_PART('epoch', NOW() - ts)) AS delay"
-                     : 'UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts) AS delay/*!50038, @@hostname AS host*/' )
-                  . " FROM $table WHERE id = 1";
-
-   MKDEBUG && _d("UPDATE SQL:", $update_sql);
-   MKDEBUG && _d("SELECT SQL:", $select_sql);
-
-   # Get the password before daemonizing.
    if ( $o->get('ask-pass') ) {
       $o->set('password', OptionParser::prompt_noecho("Enter password: "));
    }
-
-   my $dp = $o->DSNParser;
-   $dp->prop('dbidriver', $o->get('dbi-driver'));
-   $dp->prop('set-vars', $o->get('set-vars'));
    my $dsn_defaults = $dp->parse_options($o);
    my $dsn          = @ARGV ? $dp->parse(shift @ARGV, $dsn_defaults)
                     :         $dsn_defaults;
-   my $dbh          = $dp->get_dbh($dp->get_cxn_params($dsn),
-                              { AutoCommit => 1, });
-   my $sth = $dbh->prepare($o->get('update') ? $update_sql : $select_sql);
+   my $dbh          = $dp->get_dbh($dp->get_cxn_params($dsn), {AutoCommit=>1});
+   $dbh->{InactiveDestroy} = 1; # Don't disconnect on fork
+   $dbh->do("USE `$db`");
 
-   $dbh->{InactiveDestroy}  = 1; # Don't disconnect on fork
-
-   # Create the heartbeat table if desired.
+   # ########################################################################
+   # Create the heartbeat table if --create-table was given.
+   # ########################################################################
    if ( $o->get('create-table') ) {
-      my $q      = new Quoter();
-      my $db_tbl = $q->quote($o->get('database'), $o->get('table'));
-      my $sql    = $o->read_para_after(
-         __FILE__, qr/MAGIC_create_heartbeat/);
+      my $sql = $o->read_para_after(__FILE__, qr/MAGIC_create_heartbeat/);
       $sql =~ s/heartbeat/IF NOT EXISTS $db_tbl/;
       MKDEBUG && _d($sql);
       $dbh->do($sql);
@@ -2681,6 +2675,26 @@ sub main {
       # We eval to ignore this possibility.
       eval { $dbh->do($sql); };
    }
+
+   # ########################################################################
+   # Determine if heartbeat table is hi-res and which extra columns it has.
+   # ########################################################################
+   # TODO
+
+   # ########################################################################
+   # Make sth for updating or checking the heartbeat table.
+   # ########################################################################
+   my $update_sql = $o->get('replace')
+                  ? "REPLACE INTO $table(id, ts) VALUES(1, NOW())"
+                  : "UPDATE $table SET ts = NOW() WHERE id = 1";
+   my $select_sql = "SELECT "
+                  . ($o->get('dbi-driver') eq 'Pg'
+                     ? "ROUND(DATE_PART('epoch', NOW() - ts)) AS delay"
+                     : 'UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts) AS delay/*!50038, @@hostname AS host*/' )
+                  . " FROM $table WHERE id = 1";
+   my $sth = $dbh->prepare($o->get('update') ? $update_sql : $select_sql);
+   MKDEBUG && _d("UPDATE SQL:", $update_sql);
+   MKDEBUG && _d("SELECT SQL:", $select_sql);
 
    # Do a little check just to make sure the table is there, so there's one last
    # chance to catch errors before daemonizing.
@@ -2695,6 +2709,9 @@ sub main {
          . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
    }
 
+   # ########################################################################
+   # Daemonize only after (potentially) asking for passwords for --ask-pass.
+   # ########################################################################
    my $daemon;
    if ( $o->get('daemonize') ) {
       $daemon = new Daemon(o=>$o);
@@ -2707,18 +2724,19 @@ sub main {
       $daemon->make_PID_file();
    }
 
-   # Setup for moving averages.
+   # ########################################################################
+   # Setup moving averages for --frames.
+   # ########################################################################
    my @samples;
    my $limit  = max(@$frames);
    my $format = "%4ds [ " . join(", ", map { "%5.2fs" } @$frames) . " ]\n";
 
-   my $now = time();
-   my $end = $now + ($o->get('run-time') || 0);    # When to exit
-   MKDEBUG && _d('Will exit at', $end);
 
-   # --monitor and --update run in a loop, but --check only checks once and
-   # exits.
+   # ########################################################################
+   # --check and exit if --check was given.
+   # ########################################################################
    if ( $o->get('check') ) { 
+      MKDEBUG && _d('--check and exit');
       check_delay(
          o          => $o,
          dp         => $dp,
@@ -2731,11 +2749,20 @@ sub main {
       return 0;
    }
 
-   # Quit if time is exceeded or sentinel exists.
-   while ( (!$o->get('run-time') || $now < $end) && !-f $sentinel ) {
+   # ########################################################################
+   # Monitor or update the heartbeat table.
+   # ########################################################################
+   my $now = time();
+   my $end = $now + ($o->get('run-time') || 0);  # when to exit
+   MKDEBUG && _d('Will exit at', $end);
+
+   while (                                   # Stop if...
+      (!$o->get('run-time') || $now < $end)  # runtime exceeded, or
+      && !-f $sentinel                       # sentinel file created
+   ) {
       eval {
 
-         my @now = gettimeofday();
+         my @now = gettimeofday();  # (seconds, microseconds) since epoch
          usleep(
             (($interval - ($now[0] % $interval)) * 1_000_000) - $now[1]
             # --update happens at the second boundary, but --monitor and --check
@@ -2914,9 +2941,9 @@ mk-heartbeat measures replication lag on a MySQL or PostgreSQL server.  You can
 use it to update a master or monitor a replica.  If possible, MySQL connection
 options are read from your .my.cnf file.
 
- mk-heartbeat -D test --update -h master-server
- mk-heartbeat -D test --monitor -h slave-server
- mk-heartbeat -D test --monitor -h slave-server --dbi-driver Pg
+  mk-heartbeat -D test --update  -h master-server
+  mk-heartbeat -D test --monitor -h slave-server
+  mk-heartbeat -D test --monitor -h slave-server --dbi-driver Pg
 
 =head1 RISKS
 

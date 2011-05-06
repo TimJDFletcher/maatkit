@@ -26,28 +26,15 @@ else {
    plan tests => 1;
 }
 
-$sb->create_dbs($dbh, [qw(test)]);
-
 my $output;
-my $cnf = '/tmp/12345/my.sandbox.cnf';
-my $cmd = "$trunk/mk-heartbeat/mk-heartbeat -F $cnf ";
 
-# This script is rare in that it connects before it checks --pid.
-# Others check --pid earlier enough so they don't need to connect.
+$sb->load_file('master', 'mk-heartbeat/t/samples/precision-time-table.sql');
+$dbh->do('use mk_heartbeat_test');
 
-# #########################################################################
-# Issue 391: Add --pid option to all scripts
-# #########################################################################
-`touch /tmp/mk-script.pid`;
-$output = `$cmd --host 127.1 -u msandbox -p msandbox --port 12345 -D test --check --recurse 1 --pid /tmp/mk-script.pid --create-table 2>&1`;
-like(
-   $output,
-   qr{PID file /tmp/mk-script.pid already exists},
-   'Dies if PID file already exists (--pid without --daemonize) (issue 391)'
-);
-`rm -rf /tmp/mk-script.pid`;
+ok(1, 'stub');
 
 # #############################################################################
 # Done.
 # #############################################################################
+$sb->wipe_clean($dbh);
 exit;
