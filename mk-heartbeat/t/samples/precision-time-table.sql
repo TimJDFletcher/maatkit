@@ -1,14 +1,12 @@
-DROP DATABASE IF EXISTS mk_heartbeat_test;
-CREATE DATABASE mk_heartbeat_test;
-USE mk_heartbeat_test;
+DROP DATABASE IF EXISTS test;
+CREATE DATABASE test;
+USE test;
 CREATE TABLE heartbeat (
-  `id` smallint(5) unsigned NOT NULL,
-  `ts` float NOT NULL,
-  `server_id` smallint(5) unsigned NOT NULL,
-  `binlog_file` varchar(255) DEFAULT NULL,
-  `binlog_pos` bigint(20) unsigned DEFAULT NULL,
-  `master_server_id` smallint(5) unsigned DEFAULT NULL,
-  `master_binlog_file` varchar(255) DEFAULT NULL,
-  `master_binlog_pos` bigint(20) unsigned DEFAULT NULL,
-  PRIMARY KEY (`id`)
+  ts                    varchar(26) NOT NULL,
+  server_id             int unsigned NOT NULL PRIMARY KEY,
+  file                  varchar(255) DEFAULT NULL,    -- SHOW MASTER STATUS
+  position              bigint unsigned DEFAULT NULL, -- SHOW MASTER STATUS
+  relay_master_log_file varchar(255) DEFAULT NULL,    -- SHOW SLAVE STATUS 
+  exec_master_log_pos   bigint unsigned DEFAULT NULL  -- SHOW SLAVE STATUS
 ) ENGINE=MEMORY;
+INSERT INTO heartbeat (ts, server_id) VALUES (NOW(), @@server_id);

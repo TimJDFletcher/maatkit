@@ -37,7 +37,7 @@ my $ps_grep_cmd = "ps x | grep mk-heartbeat | grep daemonize | grep -v grep";
 $dbh->do('drop table if exists test.heartbeat');
 $dbh->do(q{CREATE TABLE test.heartbeat (
              id int NOT NULL PRIMARY KEY,
-             ts int unsigned NOT NULL
+             ts datetime NOT NULL
           ) ENGINE=MEMORY});
 
 # Issue: mk-heartbeat should check that the heartbeat table has a row
@@ -97,6 +97,10 @@ $dbh->do('drop table if exists test.heartbeat'); # This will kill it
 # #############################################################################
 # Issue 353: Add --create-table to mk-heartbeat
 # #############################################################################
+
+# These creates the new table format, whereas the preceding tests used the
+# old format, so tests from here on may need --master-server-id.
+
 $dbh->do('drop table if exists test.heartbeat');
 diag(`$cmd --update --run-time 1s --database test --table heartbeat --create-table`);
 $dbh->do('use test');
@@ -111,7 +115,7 @@ is(
 # Issue 352: Add port to mk-heartbeat --check output
 # #############################################################################
 sleep 1;
-$output = `$cmd --host 127.1 --user msandbox --password msandbox --port 12345 -D test --check --recurse 1`;
+$output = `$cmd --host 127.1 --user msandbox --password msandbox --port 12345 -D test --check --recurse 1 --master-server-id 12345`;
 like(
    $output,
    qr/:12346\s+\d/,
