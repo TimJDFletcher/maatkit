@@ -5281,8 +5281,7 @@ type: float
 Calculate L<"--sleep"> as a multiple of the last SELECT time.
 
 If this option is specified, mk-archiver will sleep for the query time of the
-last SELECT multiplied by the specified coefficient.  This option is ignored
-if L<"--sleep"> is specified.
+last SELECT multiplied by the specified coefficient.
 
 This is a slightly more sophisticated way to throttle the SELECTs: sleep a
 varying amount of time between each SELECT, depending on how long the SELECTs
