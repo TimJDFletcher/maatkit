@@ -2715,7 +2715,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7433
+# SQLParser package 7497
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -2762,6 +2762,7 @@ my $column_ident = qr/(?:
 sub new {
    my ( $class, %args ) = @_;
    my $self = {
+      %args,
    };
    return bless $self, $class;
 }
@@ -3563,6 +3564,22 @@ sub parse_identifier {
    else {
       die "Invalid number of parts in $type reference: $ident";
    }
+   
+   if ( $self->{SchemaQualifier} ) {
+      if ( $type eq 'column' && !$ident_struct{tbl} ) {
+         my $qcol = $self->{SchemaQualifier}->qualify_column(
+            column => $ident_struct{col},
+         );
+         $ident_struct{db}  = $qcol->{db}  if $qcol->{db};
+         $ident_struct{tbl} = $qcol->{tbl} if $qcol->{tbl};
+      }
+      elsif ( $type eq 'table' && !$ident_struct{db} ) {
+         my $db = $self->{SchemaQualifier}->get_database_for_table(
+            table => $ident_struct{tbl},
+         );
+         $ident_struct{db} = $db if $db;
+      }
+   }
 
    MKDEBUG && _d($type, "identifier struct:", Dumper(\%ident_struct));
    return \%ident_struct;
@@ -3598,6 +3615,12 @@ sub is_identifier {
    return 0;
 }
 
+sub set_SchemaQualifier {
+   my ( $self, $sq ) = @_;
+   $self->{SchemaQualifier} = $sq;
+   return;
+}
+
 sub _d {
    my ($package, undef, $line) = caller 0;
    @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
@@ -3614,7 +3637,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7458
+# TableUsage package 7498
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3874,6 +3897,7 @@ sub _get_tables_used_from_query_struct {
                      where  => $table->{join}->{where},
                      clause => 'JOIN condition',  # just for debugging
                   );
+                  MKDEBUG && _d("JOIN ON tables:", Dumper($on_tables));
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
                      $self->_change_context(
                         tables      => $tables,
@@ -4039,8 +4063,9 @@ sub _get_tables_used_in_where {
    foreach my $cond ( @$where ) {
       MKDEBUG && _d("Condition:", Dumper($cond));
       my @tables;  # tables used in this condition
-      my $n_vals      = 0;
-      my $is_constant = 0;
+      my $n_vals        = 0;
+      my $is_constant   = 0;
+      my $unknown_table = 0;
       ARG:
       foreach my $arg ( qw(left_arg right_arg) ) {
          if ( !defined $cond->{$arg} ) {
@@ -4065,6 +4090,10 @@ sub _get_tables_used_in_where {
                else {
                   MKDEBUG && _d("Condition column is not table-qualified and",
                      "query has multiple tables; cannot determine its table");
+                  if (  $cond->{$arg} !~ m/\w+\(/       # not a function
+                     && $cond->{$arg} !~ m/^[\d.]+$/) { # not a number
+                     $unknown_table = 1;
+                  }
                   next ARG;
                }
             }
@@ -4095,8 +4124,15 @@ sub _get_tables_used_in_where {
       }
       else {
          if ( @tables == 1 ) {
-            MKDEBUG && _d("Condition filters table", $tables[0]);
-            $filter_tables{$tables[0]} = undef;
+            if ( $unknown_table ) {
+               MKDEBUG && _d("Condition joins table",
+                  $tables[0], "to column from unknown table");
+               $join_tables{$tables[0]} = undef;
+            }
+            else {
+               MKDEBUG && _d("Condition filters table", $tables[0]);
+               $filter_tables{$tables[0]} = undef;
+            }
          }
          elsif ( @tables == 2 ) {
             MKDEBUG && _d("Condition joins tables",
@@ -4890,6 +4926,780 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
+# Quoter package 6850
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/Quoter.pm
+#   trunk/common/t/Quoter.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package Quoter;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   return bless {}, $class;
+}
+
+sub quote {
+   my ( $self, @vals ) = @_;
+   foreach my $val ( @vals ) {
+      $val =~ s/`/``/g;
+   }
+   return join('.', map { '`' . $_ . '`' } @vals);
+}
+
+sub quote_val {
+   my ( $self, $val ) = @_;
+
+   return 'NULL' unless defined $val;          # undef = NULL
+   return "''" if $val eq '';                  # blank string = ''
+   return $val if $val =~ m/^0x[0-9a-fA-F]+$/;  # hex data
+
+   $val =~ s/(['\\])/\\$1/g;
+   return "'$val'";
+}
+
+sub split_unquote {
+   my ( $self, $db_tbl, $default_db ) = @_;
+   $db_tbl =~ s/`//g;
+   my ( $db, $tbl ) = split(/[.]/, $db_tbl);
+   if ( !$tbl ) {
+      $tbl = $db;
+      $db  = $default_db;
+   }
+   return ($db, $tbl);
+}
+
+sub literal_like {
+   my ( $self, $like ) = @_;
+   return unless $like;
+   $like =~ s/([%_])/\\$1/g;
+   return "'$like'";
+}
+
+sub join_quote {
+   my ( $self, $default_db, $db_tbl ) = @_;
+   return unless $db_tbl;
+   my ($db, $tbl) = split(/[.]/, $db_tbl);
+   if ( !$tbl ) {
+      $tbl = $db;
+      $db  = $default_db;
+   }
+   $db  = "`$db`"  if $db  && $db  !~ m/^`/;
+   $tbl = "`$tbl`" if $tbl && $tbl !~ m/^`/;
+   return $db ? "$db.$tbl" : $tbl;
+}
+
+1;
+
+# ###########################################################################
+# End Quoter package
+# ###########################################################################
+
+# ###########################################################################
+# TableParser package 7156
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/TableParser.pm
+#   trunk/common/t/TableParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+
+package TableParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = { %args };
+   return bless $self, $class;
+}
+
+sub parse {
+   my ( $self, $ddl, $opts ) = @_;
+   return unless $ddl;
+   if ( ref $ddl eq 'ARRAY' ) {
+      if ( lc $ddl->[0] eq 'table' ) {
+         $ddl = $ddl->[1];
+      }
+      else {
+         return {
+            engine => 'VIEW',
+         };
+      }
+   }
+
+   if ( $ddl !~ m/CREATE (?:TEMPORARY )?TABLE `/ ) {
+      die "Cannot parse table definition; is ANSI quoting "
+         . "enabled or SQL_QUOTE_SHOW_CREATE disabled?";
+   }
+
+   my ($name)     = $ddl =~ m/CREATE (?:TEMPORARY )?TABLE\s+(`.+?`)/;
+   (undef, $name) = $self->{Quoter}->split_unquote($name) if $name;
+
+   $ddl =~ s/(`[^`]+`)/\L$1/g;
+
+   my $engine = $self->get_engine($ddl);
+
+   my @defs   = $ddl =~ m/^(\s+`.*?),?$/gm;
+   my @cols   = map { $_ =~ m/`([^`]+)`/ } @defs;
+   MKDEBUG && _d('Table cols:', join(', ', map { "`$_`" } @cols));
+
+   my %def_for;
+   @def_for{@cols} = @defs;
+
+   my (@nums, @null);
+   my (%type_for, %is_nullable, %is_numeric, %is_autoinc);
+   foreach my $col ( @cols ) {
+      my $def = $def_for{$col};
+      my ( $type ) = $def =~ m/`[^`]+`\s([a-z]+)/;
+      die "Can't determine column type for $def" unless $type;
+      $type_for{$col} = $type;
+      if ( $type =~ m/(?:(?:tiny|big|medium|small)?int|float|double|decimal|year)/ ) {
+         push @nums, $col;
+         $is_numeric{$col} = 1;
+      }
+      if ( $def !~ m/NOT NULL/ ) {
+         push @null, $col;
+         $is_nullable{$col} = 1;
+      }
+      $is_autoinc{$col} = $def =~ m/AUTO_INCREMENT/i ? 1 : 0;
+   }
+
+   my ($keys, $clustered_key) = $self->get_keys($ddl, $opts, \%is_nullable);
+
+   my ($charset) = $ddl =~ m/DEFAULT CHARSET=(\w+)/;
+
+   return {
+      name           => $name,
+      cols           => \@cols,
+      col_posn       => { map { $cols[$_] => $_ } 0..$#cols },
+      is_col         => { map { $_ => 1 } @cols },
+      null_cols      => \@null,
+      is_nullable    => \%is_nullable,
+      is_autoinc     => \%is_autoinc,
+      clustered_key  => $clustered_key,
+      keys           => $keys,
+      defs           => \%def_for,
+      numeric_cols   => \@nums,
+      is_numeric     => \%is_numeric,
+      engine         => $engine,
+      type_for       => \%type_for,
+      charset        => $charset,
+   };
+}
+
+sub sort_indexes {
+   my ( $self, $tbl ) = @_;
+
+   my @indexes
+      = sort {
+         (($a ne 'PRIMARY') <=> ($b ne 'PRIMARY'))
+         || ( !$tbl->{keys}->{$a}->{is_unique} <=> !$tbl->{keys}->{$b}->{is_unique} )
+         || ( $tbl->{keys}->{$a}->{is_nullable} <=> $tbl->{keys}->{$b}->{is_nullable} )
+         || ( scalar(@{$tbl->{keys}->{$a}->{cols}}) <=> scalar(@{$tbl->{keys}->{$b}->{cols}}) )
+      }
+      grep {
+         $tbl->{keys}->{$_}->{type} eq 'BTREE'
+      }
+      sort keys %{$tbl->{keys}};
+
+   MKDEBUG && _d('Indexes sorted best-first:', join(', ', @indexes));
+   return @indexes;
+}
+
+sub find_best_index {
+   my ( $self, $tbl, $index ) = @_;
+   my $best;
+   if ( $index ) {
+      ($best) = grep { uc $_ eq uc $index } keys %{$tbl->{keys}};
+   }
+   if ( !$best ) {
+      if ( $index ) {
+         die "Index '$index' does not exist in table";
+      }
+      else {
+         ($best) = $self->sort_indexes($tbl);
+      }
+   }
+   MKDEBUG && _d('Best index found is', $best);
+   return $best;
+}
+
+sub find_possible_keys {
+   my ( $self, $dbh, $database, $table, $quoter, $where ) = @_;
+   return () unless $where;
+   my $sql = 'EXPLAIN SELECT * FROM ' . $quoter->quote($database, $table)
+      . ' WHERE ' . $where;
+   MKDEBUG && _d($sql);
+   my $expl = $dbh->selectrow_hashref($sql);
+   $expl = { map { lc($_) => $expl->{$_} } keys %$expl };
+   if ( $expl->{possible_keys} ) {
+      MKDEBUG && _d('possible_keys =', $expl->{possible_keys});
+      my @candidates = split(',', $expl->{possible_keys});
+      my %possible   = map { $_ => 1 } @candidates;
+      if ( $expl->{key} ) {
+         MKDEBUG && _d('MySQL chose', $expl->{key});
+         unshift @candidates, grep { $possible{$_} } split(',', $expl->{key});
+         MKDEBUG && _d('Before deduping:', join(', ', @candidates));
+         my %seen;
+         @candidates = grep { !$seen{$_}++ } @candidates;
+      }
+      MKDEBUG && _d('Final list:', join(', ', @candidates));
+      return @candidates;
+   }
+   else {
+      MKDEBUG && _d('No keys in possible_keys');
+      return ();
+   }
+}
+
+sub check_table {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dbh db tbl);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dbh, $db, $tbl) = @args{@required_args};
+   my $q      = $self->{Quoter};
+   my $db_tbl = $q->quote($db, $tbl);
+   MKDEBUG && _d('Checking', $db_tbl);
+
+   my $sql = "SHOW TABLES FROM " . $q->quote($db)
+           . ' LIKE ' . $q->literal_like($tbl);
+   MKDEBUG && _d($sql);
+   my $row;
+   eval {
+      $row = $dbh->selectrow_arrayref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !$row->[0] || $row->[0] ne $tbl ) {
+      MKDEBUG && _d('Table does not exist');
+      return 0;
+   }
+
+   MKDEBUG && _d('Table exists; no privs to check');
+   return 1 unless $args{all_privs};
+
+   $sql = "SHOW FULL COLUMNS FROM $db_tbl";
+   MKDEBUG && _d($sql);
+   eval {
+      $row = $dbh->selectrow_hashref($sql);
+   };
+   if ( $EVAL_ERROR ) {
+      MKDEBUG && _d($EVAL_ERROR);
+      return 0;
+   }
+   if ( !scalar keys %$row ) {
+      MKDEBUG && _d('Table has no columns:', Dumper($row));
+      return 0;
+   }
+   my $privs = $row->{privileges} || $row->{Privileges};
+
+   $sql = "DELETE FROM $db_tbl LIMIT 0";
+   MKDEBUG && _d($sql);
+   eval {
+      $dbh->do($sql);
+   };
+   my $can_delete = $EVAL_ERROR ? 0 : 1;
+
+   MKDEBUG && _d('User privs on', $db_tbl, ':', $privs,
+      ($can_delete ? 'delete' : ''));
+
+   if ( !($privs =~ m/select/ && $privs =~ m/insert/ && $privs =~ m/update/
+          && $can_delete) ) {
+      MKDEBUG && _d('User does not have all privs');
+      return 0;
+   }
+
+   MKDEBUG && _d('User has all privs');
+   return 1;
+}
+
+sub get_engine {
+   my ( $self, $ddl, $opts ) = @_;
+   my ( $engine ) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;
+   MKDEBUG && _d('Storage engine:', $engine);
+   return $engine || undef;
+}
+
+sub get_keys {
+   my ( $self, $ddl, $opts, $is_nullable ) = @_;
+   my $engine        = $self->get_engine($ddl);
+   my $keys          = {};
+   my $clustered_key = undef;
+
+   KEY:
+   foreach my $key ( $ddl =~ m/^  ((?:[A-Z]+ )?KEY .*)$/gm ) {
+
+      next KEY if $key =~ m/FOREIGN/;
+
+      my $key_ddl = $key;
+      MKDEBUG && _d('Parsed key:', $key_ddl);
+
+      if ( $engine !~ m/MEMORY|HEAP/ ) {
+         $key =~ s/USING HASH/USING BTREE/;
+      }
+
+      my ( $type, $cols ) = $key =~ m/(?:USING (\w+))? \((.+)\)/;
+      my ( $special ) = $key =~ m/(FULLTEXT|SPATIAL)/;
+      $type = $type || $special || 'BTREE';
+      if ( $opts->{mysql_version} && $opts->{mysql_version} lt '004001000'
+         && $engine =~ m/HEAP|MEMORY/i )
+      {
+         $type = 'HASH'; # MySQL pre-4.1 supports only HASH indexes on HEAP
+      }
+
+      my ($name) = $key =~ m/(PRIMARY|`[^`]*`)/;
+      my $unique = $key =~ m/PRIMARY|UNIQUE/ ? 1 : 0;
+      my @cols;
+      my @col_prefixes;
+      foreach my $col_def ( $cols =~ m/`[^`]+`(?:\(\d+\))?/g ) {
+         my ($name, $prefix) = $col_def =~ m/`([^`]+)`(?:\((\d+)\))?/;
+         push @cols, $name;
+         push @col_prefixes, $prefix;
+      }
+      $name =~ s/`//g;
+
+      MKDEBUG && _d( $name, 'key cols:', join(', ', map { "`$_`" } @cols));
+
+      $keys->{$name} = {
+         name         => $name,
+         type         => $type,
+         colnames     => $cols,
+         cols         => \@cols,
+         col_prefixes => \@col_prefixes,
+         is_unique    => $unique,
+         is_nullable  => scalar(grep { $is_nullable->{$_} } @cols),
+         is_col       => { map { $_ => 1 } @cols },
+         ddl          => $key_ddl,
+      };
+
+      if ( $engine =~ m/InnoDB/i && !$clustered_key ) {
+         my $this_key = $keys->{$name};
+         if ( $this_key->{name} eq 'PRIMARY' ) {
+            $clustered_key = 'PRIMARY';
+         }
+         elsif ( $this_key->{is_unique} && !$this_key->{is_nullable} ) {
+            $clustered_key = $this_key->{name};
+         }
+         MKDEBUG && $clustered_key && _d('This key is the clustered key');
+      }
+   }
+
+   return $keys, $clustered_key;
+}
+
+sub get_fks {
+   my ( $self, $ddl, $opts ) = @_;
+   my $fks = {};
+
+   foreach my $fk (
+      $ddl =~ m/CONSTRAINT .* FOREIGN KEY .* REFERENCES [^\)]*\)/mg )
+   {
+      my ( $name ) = $fk =~ m/CONSTRAINT `(.*?)`/;
+      my ( $cols ) = $fk =~ m/FOREIGN KEY \(([^\)]+)\)/;
+      my ( $parent, $parent_cols ) = $fk =~ m/REFERENCES (\S+) \(([^\)]+)\)/;
+
+      if ( $parent !~ m/\./ && $opts->{database} ) {
+         $parent = "`$opts->{database}`.$parent";
+      }
+
+      $fks->{$name} = {
+         name           => $name,
+         colnames       => $cols,
+         cols           => [ map { s/[ `]+//g; $_; } split(',', $cols) ],
+         parent_tbl     => $parent,
+         parent_colnames=> $parent_cols,
+         parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
+         ddl            => $fk,
+      };
+   }
+
+   return $fks;
+}
+
+sub remove_auto_increment {
+   my ( $self, $ddl ) = @_;
+   $ddl =~ s/(^\).*?) AUTO_INCREMENT=\d+\b/$1/m;
+   return $ddl;
+}
+
+sub remove_secondary_indexes {
+   my ( $self, $ddl ) = @_;
+   my $sec_indexes_ddl;
+   my $tbl_struct = $self->parse($ddl);
+
+   if ( ($tbl_struct->{engine} || '') =~ m/InnoDB/i ) {
+      my $clustered_key = $tbl_struct->{clustered_key};
+      $clustered_key  ||= '';
+
+      my @sec_indexes   = map {
+         my $key_def = $_->{ddl};
+         $key_def =~ s/([\(\)])/\\$1/g;
+         $ddl =~ s/\s+$key_def//i;
+
+         my $key_ddl = "ADD $_->{ddl}";
+         $key_ddl   .= ',' unless $key_ddl =~ m/,$/;
+         $key_ddl;
+      }
+      grep { $_->{name} ne $clustered_key }
+      values %{$tbl_struct->{keys}};
+      MKDEBUG && _d('Secondary indexes:', Dumper(\@sec_indexes));
+
+      if ( @sec_indexes ) {
+         $sec_indexes_ddl = join(' ', @sec_indexes);
+         $sec_indexes_ddl =~ s/,$//;
+      }
+
+      $ddl =~ s/,(\n\) )/$1/s;
+   }
+   else {
+      MKDEBUG && _d('Not removing secondary indexes from',
+         $tbl_struct->{engine}, 'table');
+   }
+
+   return $ddl, $sec_indexes_ddl, $tbl_struct;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End TableParser package
+# ###########################################################################
+
+# ###########################################################################
+# MysqldumpParser package 7500
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/MysqldumpParser.pm
+#   trunk/common/t/MysqldumpParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package MysqldumpParser;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+my $open_comment = qr{/\*!\d{5} };
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = {
+      %args,
+   };
+   return bless $self, $class;
+}
+
+sub parse_create_tables {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(file);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($file) = @args{@required_args};
+
+   MKDEBUG && _d('Parsing CREATE TABLE from', $file);
+   open my $fh, '<', $file
+      or die "Cannot open $file: $OS_ERROR";
+
+   local $INPUT_RECORD_SEPARATOR = '';
+
+   my %schema;
+   my $db = '';
+   CHUNK:
+   while (defined(my $chunk = <$fh>)) {
+      MKDEBUG && _d('db:', $db, 'chunk:', $chunk);
+      if ($chunk =~ m/Database: (\S+)/) {
+         $db = $1; # XXX
+         $db =~ s/^`//;  # strip leading `
+         $db =~ s/`$//;  # and trailing `
+         MKDEBUG && _d('New db:', $db);
+      }
+      elsif ($chunk =~ m/CREATE TABLE/) {
+         MKDEBUG && _d('Chunk has CREATE TABLE');
+
+         if ($chunk =~ m/DROP VIEW IF EXISTS/) {
+            MKDEBUG && _d('Table is a VIEW, skipping');
+            next CHUNK;
+         }
+
+         my ($create_table)
+            = $chunk =~ m/^(?:$open_comment)?(CREATE TABLE.+?;)$/ms;
+         if ( !$create_table ) {
+            warn "Failed to parse CREATE TABLE from\n" . $chunk;
+            next CHUNK;
+         }
+         $create_table =~ s/ \*\/;\Z/;/;  # remove end of version comment
+
+         push @{$schema{$db}}, $create_table;
+      }
+      else {
+         MKDEBUG && _d('Chunk has other data, ignoring');
+      }
+   }
+
+   close $fh;
+
+   return \%schema;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End MysqldumpParser package
+# ###########################################################################
+
+# ###########################################################################
+# SchemaQualifier package 7499
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/SchemaQualifier.pm
+#   trunk/common/t/SchemaQualifier.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package SchemaQualifier;
+
+{ # package scope
+use strict;
+use warnings FATAL => 'all';
+
+use English qw(-no_match_vars);
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw(TableParser Quoter);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my $self = {
+      %args,
+      schema                => {},  # db > tbl > col
+      duplicate_column_name => {},
+      duplicate_table_name  => {},
+   };
+   return bless $self, $class;
+}
+
+sub schema {
+   my ( $self ) = @_;
+   return $self->{schema};
+}
+
+sub get_duplicate_column_names {
+   my ( $self ) = @_;
+   return keys %{$self->{duplicate_column_name}};
+}
+
+sub get_duplicate_table_names {
+   my ( $self ) = @_;
+   return keys %{$self->{duplicate_table_name}};
+}
+
+sub set_schema_from_mysqldump {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(dump);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($dump) = @args{@required_args};
+
+   my $schema = $self->{schema};
+   my $tp     = $self->{TableParser};
+   my %column_name;
+   my %table_name;
+
+   DATABASE:
+   foreach my $db (keys %$dump) {
+      if ( !$db ) {
+         warn "Empty database from parsed mysqldump output";
+         next DATABASE;
+      }
+
+      TABLE:
+      foreach my $table_def ( @{$dump->{$db}} ) {
+         if ( !$table_def ) {
+            warn "Empty CREATE TABLE for database $db parsed from mysqldump output";
+            next TABLE;
+         }
+         my $tbl_struct = $tp->parse($table_def);
+         $schema->{$db}->{$tbl_struct->{name}} = $tbl_struct->{is_col};
+
+         map { $column_name{$_}++ } @{$tbl_struct->{cols}};
+         $table_name{$tbl_struct->{name}}++;
+      }
+   }
+
+   map { $self->{duplicate_column_name}->{$_} = 1 }
+   grep { $column_name{$_} > 1 }
+   keys %column_name;
+
+   map { $self->{duplicate_table_name}->{$_} = 1 }
+   grep { $table_name{$_} > 1 }
+   keys %table_name;
+
+   MKDEBUG && _d('Schema:', Dumper($schema));
+   return;
+}
+
+sub qualify_column {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(column);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($column) = @args{@required_args};
+
+   MKDEBUG && _d('Qualifying', $column);
+   my ($col, $tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $column;
+   MKDEBUG && _d('Column', $column, 'has db', $db, 'tbl', $tbl, 'col', $col);
+
+   my %qcol = (
+      db  => $db,
+      tbl => $tbl,
+      col => $col,
+   );
+   if ( !$qcol{tbl} ) {
+      @qcol{qw(db tbl)} = $self->get_table_for_column(column => $qcol{col});
+   }
+   elsif ( !$qcol{db} ) {
+      $qcol{db} = $self->get_database_for_table(table => $qcol{tbl});
+   }
+   else {
+      MKDEBUG && _d('Column is already database-table qualified');
+   }
+
+   return \%qcol;
+}
+
+sub get_table_for_column {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(column);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($col) = @args{@required_args};
+   MKDEBUG && _d('Getting table for column', $col);
+
+   if ( $self->{duplicate_column_name}->{$col} ) {
+      MKDEBUG && _d('Column name is duplicate, cannot qualify it');
+      return;
+   }
+
+   my $schema = $self->{schema};
+   foreach my $db ( keys %{$schema} ) {
+      foreach my $tbl ( keys %{$schema->{$db}} ) {
+         if ( $schema->{$db}->{$tbl}->{$col} ) {
+            MKDEBUG && _d('Column is in database', $db, 'table', $tbl);
+            return $db, $tbl;
+         }
+      }
+   }
+
+   MKDEBUG && _d('Failed to find column in any table');
+   return;
+}
+
+sub get_database_for_table {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(table);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tbl) = @args{@required_args};
+   MKDEBUG && _d('Getting database for table', $tbl);
+   
+   if ( $self->{duplicate_table_name}->{$tbl} ) {
+      MKDEBUG && _d('Table name is duplicate, cannot qualify it');
+      return;
+   }
+
+   my $schema = $self->{schema};
+   foreach my $db ( keys %{$schema} ) {
+     if ( $schema->{$db}->{$tbl} ) {
+       MKDEBUG && _d('Table is in database', $db);
+       return $db;
+     }
+   }
+
+   MKDEBUG && _d('Failed to find table in any database');
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+} # package scope
+1;
+
+# ###########################################################################
+# End SchemaQualifier package
+# ###########################################################################
+
+# ###########################################################################
 # This is a combination of modules and programs in one -- a runnable module.
 # http://www.perl.com/pub/a/2006/07/13/lightning-articles.html?page=last
 # Or, look it up in the Camel book on pages 642 and 643 in the 3rd edition.
@@ -4956,6 +5766,27 @@ sub main {
       QueryParser   => $qp,
       QueryRewriter => $qr,
    );
+
+   # ########################################################################
+   # Parse the --create-table-definitions files.
+   # ########################################################################
+   if ( my $files = $o->get('create-table-definitions') ) {
+      my $q  = new Quoter();
+      my $tp = new TableParser(Quoter => $q);
+      my $sq = new SchemaQualifier(TableParser => $tp, Quoter => $q);
+
+      my $dump_parser = new MysqldumpParser();
+      FILE:
+      foreach my $file ( @$files ) {
+         my $dump = $dump_parser->parse_create_tables(file => $file);
+         if ( !$dump || !keys %$dump ) {
+            warn "No CREATE TABLE statements were found in $file";
+            next FILE;
+         }
+         $sq->set_schema_from_mysqldump(dump => $dump); 
+      }
+      $sp->set_SchemaQualifier($sq);
+   }
 
    # ########################################################################
    # Set up an array of callbacks.
@@ -5675,6 +6506,19 @@ line indicates that that data comes from some constant value.
 default: yes
 
 Continue parsing even if there is an error.
+
+=item --create-table-definitions
+
+type: array
+
+Read C<CREATE TABLE> definitions from this list of comma-separated files.
+If you cannot use L<"--explain-extended"> to fully qualify table and column
+names, you can save the output of C<mysqldump --no-data> to one or more files
+and specify those files with this option.  The tool will parse all
+C<CREATE TABLE> definitions from the files and use this information to
+qualify table and column names.  If a column name is used in multiple tables,
+or table name is used in multiple databases, these duplicates cannot be
+qualified.
 
 =item --daemonize
 
