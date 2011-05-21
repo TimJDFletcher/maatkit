@@ -146,6 +146,7 @@ sub _packet_from_server {
       MKDEBUG && _d('State is awaiting reply');
       # \r\n == 0d0a
       my ($line1, $rest) = $packet->{data} =~ m/\A(.*?)\r\n(.*)?/s;
+      die "Unknown memcached data from server" unless $line1;
 
       # Split up the first line into its parts.
       my @vals = $line1 =~ m/(\S+)/g;
@@ -248,6 +249,10 @@ sub _packet_from_client {
       MKDEBUG && _d('Session state: ', $session->{state});
       # Split up the first line into its parts.
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
+      if ( !$line1 ) {
+         MKDEBUG && _d('Unknown data from client, skipping packet');
+         return;
+      }
       # TODO: handle <cas unique> and [noreply]
       my @vals = $line1 =~ m/(\S+)/g;
       $cmd = lc shift @vals;
