@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 135;
+use Test::More tests => 137;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2292,6 +2292,74 @@ foreach my $test ( @cases ) {
    ) or print Dumper($struct);
    die if $test->{stop};
 }
+
+
+# ############################################################################
+# Use SchemaQualifier to achieve full awesomeness.
+# ############################################################################
+use MysqldumpParser;
+use Quoter;
+use TableParser;
+use SchemaQualifier;
+
+my $in = 
+
+my $p  = new MysqldumpParser();
+my $q  = new Quoter;
+my $tp = new TableParser(Quoter => $q);
+my $sq = new SchemaQualifier(TableParser => $tp, Quoter => $q);
+
+my $dump = $p->parse_create_tables(
+   file => "$trunk/common/t/samples/mysqldump-no-data/dump001.txt",
+);
+$sq->set_schema_from_mysqldump(dump => $dump);
+
+# Notice how c3 and b aren't qualified.
+is_deeply(
+   $sp->parse("select c3 from b where 'foo'=c3"),
+   {
+      type     => 'select',
+      clauses  => {
+         columns => 'c3 ',
+         from    => 'b ',
+         where   => '\'foo\'=c3',
+      },
+      columns  => [ { col => 'c3' } ],
+      from     => [ { tbl => 'b' } ],
+      where    => [ {
+         left_arg  => "'foo'",
+         operator  => '=',
+         right_arg => 'c3',
+         predicate => undef,
+      } ],
+      unknown  => undef,
+   },
+   "Query struct without SchemaQualifier"
+);
+
+# Now they're qualified.
+$sp->set_SchemaQualifier($sq);
+is_deeply(
+   $sp->parse("select c3 from b where 'foo'=c3"),
+   {
+      type     => 'select',
+      clauses  => {
+         columns => 'c3 ',
+         from    => 'b ',
+         where   => '\'foo\'=c3',
+      },
+      columns  => [ { db => 'test', tbl => 'b', col => 'c3' } ],
+      from     => [ { db => 'test', tbl => 'b' } ],
+      where    => [ {
+         left_arg  => "'foo'",
+         operator  => '=',
+         right_arg => 'c3',
+         predicate => undef,
+      } ],
+      unknown  => undef,
+   },
+   "Query struct with SchemaQualifier"
+);
 
 # #############################################################################
 # Done.

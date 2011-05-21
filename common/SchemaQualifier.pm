@@ -19,6 +19,7 @@
 # ###########################################################################
 package SchemaQualifier;
 
+{ # package scope
 use strict;
 use warnings FATAL => 'all';
 
@@ -119,6 +120,7 @@ sub set_schema_from_mysqldump {
    grep { $table_name{$_} > 1 }
    keys %table_name;
 
+   MKDEBUG && _d('Schema:', Dumper($schema));
    return;
 }
 
@@ -214,6 +216,7 @@ sub _d {
    print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
 }
 
+} # package scope
 1;
 
 # ###########################################################################
