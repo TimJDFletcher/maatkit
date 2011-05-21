@@ -550,6 +550,12 @@ is_deeply(
   `c3` varchar(45) NOT NULL,
 );",
       ],
+      test2 => [
+"CREATE TABLE `a` (
+  `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
+  `c2` varchar(45) NOT NULL
+);",
+      ],
    },
    "dump001.txt"
 );

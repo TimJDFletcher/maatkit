@@ -76,7 +76,6 @@ sub parse_create_tables {
    CHUNK:
    while (defined(my $chunk = <$fh>)) {
       MKDEBUG && _d('db:', $db, 'chunk:', $chunk);
-
       if ($chunk =~ m/Database: (\S+)/) {
          # If the file is a dump of one db, then the only indication of that
          # db is in a comment at the start of the file like,
@@ -112,6 +111,9 @@ sub parse_create_tables {
          $create_table =~ s/ \*\/;\Z/;/;  # remove end of version comment
 
          push @{$schema{$db}}, $create_table;
+      }
+      else {
+         MKDEBUG && _d('Chunk has other data, ignoring');
       }
    }
 
