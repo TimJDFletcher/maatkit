@@ -79,13 +79,10 @@ sub set_schema_from_mysqldump {
    }
    my ($dump) = @args{@required_args};
 
-   my $tp = $self->{TableParser};
+   my $schema = $self->{schema};
+   my $tp     = $self->{TableParser};
    my %column_name;
    my %table_name;
-
-   # Clear previous schema, if any.
-   $self->{schema} = {};
-   my $schema = $self->{schema};
 
    DATABASE:
    foreach my $db (keys %$dump) {
@@ -109,13 +106,11 @@ sub set_schema_from_mysqldump {
    }
 
    # Save duplicate column names.
-   $self->{duplicate_column_name} = {};
    map { $self->{duplicate_column_name}->{$_} = 1 }
    grep { $column_name{$_} > 1 }
    keys %column_name;
 
    # Save duplicate table names.
-   $self->{duplicate_table_name} = {};
    map { $self->{duplicate_table_name}->{$_} = 1 }
    grep { $table_name{$_} > 1 }
    keys %table_name;
