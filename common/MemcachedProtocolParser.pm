@@ -108,10 +108,10 @@ sub parse_event {
    $packet->{data} = pack('H*', $packet->{data});
    my $event;
    if ( $packet_from eq 'server' ) {
-      $event = $self->_packet_from_server($packet, $session, $args{misc});
+      $event = $self->_packet_from_server($packet, $session, %args);
    }
    elsif ( $packet_from eq 'client' ) {
-      $event = $self->_packet_from_client($packet, $session, $args{misc});
+      $event = $self->_packet_from_client($packet, $session, %args);
    }
    else {
       # Should not get here.
@@ -125,7 +125,7 @@ sub parse_event {
 # Handles a packet from the server given the state of the session.  Returns an
 # event if one was ready to be created, otherwise returns nothing.
 sub _packet_from_server {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -224,7 +224,7 @@ sub _packet_from_server {
 
 # Handles a packet from the client given the state of the session.
 sub _packet_from_client {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -250,7 +250,8 @@ sub _packet_from_client {
       # Split up the first line into its parts.
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
       if ( !$line1 ) {
-         MKDEBUG && _d('Unknown data from client, skipping packet');
+         MKDEBUG && _d('Unknown memcached data from client, skipping packet');
+         $args{stats}->{unknown_memcached_data_from_client}++ if $args{stats};
          return;
       }
       # TODO: handle <cas unique> and [noreply]
