@@ -2293,7 +2293,6 @@ foreach my $test ( @cases ) {
    die if $test->{stop};
 }
 
-
 # ############################################################################
 # Use SchemaQualifier to achieve full awesomeness.
 # ############################################################################
@@ -2301,8 +2300,6 @@ use MysqldumpParser;
 use Quoter;
 use TableParser;
 use SchemaQualifier;
-
-my $in = 
 
 my $p  = new MysqldumpParser();
 my $q  = new Quoter;

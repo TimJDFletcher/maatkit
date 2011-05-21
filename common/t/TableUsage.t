@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 24;
+use Test::More tests => 26;
 
 use MaatkitTest;
 use QueryParser;
@@ -537,6 +537,76 @@ $ta = new TableUsage(
    QueryParser => $qp,
    SQLParser   => $sp,
 );
+
+# ############################################################################
+# Use SchemaQualifier instead of EXPLAIN EXTENDED.
+# ############################################################################
+use MysqldumpParser;
+use Quoter;
+use TableParser;
+use SchemaQualifier;
+
+my $p  = new MysqldumpParser();
+my $q  = new Quoter;
+my $tp = new TableParser(Quoter => $q);
+my $sq = new SchemaQualifier(TableParser => $tp, Quoter => $q);
+
+my $dump = $p->parse_create_tables(
+   file => "$trunk/common/t/samples/mysqldump-no-data/dump001.txt",
+);
+$sq->set_schema_from_mysqldump(dump => $dump);
+
+# Before, this is as correct as we can determine.  The WHERE access is missing
+# because c3 is not qualified and there's multiple tables, so the code can't
+# figure out to which table it belongs.
+test_get_table_usage(
+   "SELECT a.c1, c3 FROM a JOIN b ON a.c2=c3 WHERE NOW()<c3",
+   [
+      [
+         { context => 'SELECT',
+           table   => 'a',
+         },
+         { context => 'JOIN',
+           table   => 'a',
+         },
+         { context => 'JOIN',
+           table   => 'b',
+         },
+      ],
+   ],
+   "Tables without SchemaQualifier"
+); 
+
+# After, now we have a db for table b, but not for a because the schema
+# we loaded has two table a (test.a and test2.a).  The WHERE access is
+# now present.
+$sp->set_SchemaQualifier($sq);
+test_get_table_usage(
+   "SELECT a.c1, c3 FROM a JOIN b ON a.c2=c3 WHERE NOW()<c3",
+   [
+      [
+         { context => 'SELECT',
+           table   => 'a',
+         },
+         { context => 'SELECT',
+           table   => 'test.b',
+         },
+         { context => 'JOIN',
+           table   => 'a',
+         },
+         { context => 'JOIN',
+           table   => 'test.b',
+         },
+         { context => 'WHERE',
+           table   => 'test.b',
+         },
+      ],
+   ],
+   "Tables with SchemaQualifier"
+); 
+
+# Set it back for the next tests.
+$sp->set_SchemaQualifier(undef);
 
 # #############################################################################
 # Done.

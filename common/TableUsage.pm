@@ -338,6 +338,7 @@ sub _get_tables_used_from_query_struct {
                      where  => $table->{join}->{where},
                      clause => 'JOIN condition',  # just for debugging
                   );
+                  MKDEBUG && _d("JOIN ON tables:", Dumper($on_tables));
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
                      $self->_change_context(
                         tables      => $tables,
@@ -509,8 +510,9 @@ sub _get_tables_used_in_where {
    foreach my $cond ( @$where ) {
       MKDEBUG && _d("Condition:", Dumper($cond));
       my @tables;  # tables used in this condition
-      my $n_vals      = 0;
-      my $is_constant = 0;
+      my $n_vals        = 0;
+      my $is_constant   = 0;
+      my $unknown_table = 0;
       ARG:
       foreach my $arg ( qw(left_arg right_arg) ) {
          if ( !defined $cond->{$arg} ) {
@@ -535,6 +537,10 @@ sub _get_tables_used_in_where {
                else {
                   MKDEBUG && _d("Condition column is not table-qualified and",
                      "query has multiple tables; cannot determine its table");
+                  if (  $cond->{$arg} !~ m/\w+\(/       # not a function
+                     && $cond->{$arg} !~ m/^[\d.]+$/) { # not a number
+                     $unknown_table = 1;
+                  }
                   next ARG;
                }
             }
@@ -565,8 +571,15 @@ sub _get_tables_used_in_where {
       }
       else {
          if ( @tables == 1 ) {
-            MKDEBUG && _d("Condition filters table", $tables[0]);
-            $filter_tables{$tables[0]} = undef;
+            if ( $unknown_table ) {
+               MKDEBUG && _d("Condition joins table",
+                  $tables[0], "to column from unknown table");
+               $join_tables{$tables[0]} = undef;
+            }
+            else {
+               MKDEBUG && _d("Condition filters table", $tables[0]);
+               $filter_tables{$tables[0]} = undef;
+            }
          }
          elsif ( @tables == 2 ) {
             MKDEBUG && _d("Condition joins tables",
