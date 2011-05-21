@@ -8874,7 +8874,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MemcachedProtocolParser package 6590
+# MemcachedProtocolParser package 7503
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MemcachedProtocolParser.pm
@@ -8961,10 +8961,10 @@ sub parse_event {
    $packet->{data} = pack('H*', $packet->{data});
    my $event;
    if ( $packet_from eq 'server' ) {
-      $event = $self->_packet_from_server($packet, $session, $args{misc});
+      $event = $self->_packet_from_server($packet, $session, %args);
    }
    elsif ( $packet_from eq 'client' ) {
-      $event = $self->_packet_from_client($packet, $session, $args{misc});
+      $event = $self->_packet_from_client($packet, $session, %args);
    }
    else {
       die 'Packet origin unknown';
@@ -8975,7 +8975,7 @@ sub parse_event {
 }
 
 sub _packet_from_server {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -8991,6 +8991,7 @@ sub _packet_from_server {
    if ( $session->{state} eq 'awaiting reply' ) {
       MKDEBUG && _d('State is awaiting reply');
       my ($line1, $rest) = $packet->{data} =~ m/\A(.*?)\r\n(.*)?/s;
+      die "Unknown memcached data from server" unless $line1;
 
       my @vals = $line1 =~ m/(\S+)/g;
       $session->{res} = shift @vals;
@@ -9060,7 +9061,7 @@ sub _packet_from_server {
 }
 
 sub _packet_from_client {
-   my ( $self, $packet, $session, $misc ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -9082,6 +9083,11 @@ sub _packet_from_client {
    if ( !$session->{state} ) {
       MKDEBUG && _d('Session state: ', $session->{state});
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
+      if ( !$line1 ) {
+         MKDEBUG && _d('Unknown memcached data from client, skipping packet');
+         $args{stats}->{unknown_memcached_data_from_client}++ if $args{stats};
+         return;
+      }
       my @vals = $line1 =~ m/(\S+)/g;
       $cmd = lc shift @vals;
       MKDEBUG && _d('$cmd is a ', $cmd);
@@ -12217,7 +12223,10 @@ sub main {
    # pass data through the pipeline.  The most importat data is the event.
    # Other data includes in the next_event callback, time and iters left,
    # etc.  This hashref is accessed inside a proc via the $args arg.
-   my $pipeline_data = { iter => 1 };
+   my $pipeline_data = {
+      iter  => 1,
+      stats => \%stats,
+   };
 
    # Enable timings to instrument code for either of these two opts.
    # Else, don't instrument to avoid cost of measurement.
@@ -12436,6 +12445,7 @@ sub main {
                         tell        => $args->{tell},
                         misc        => $args->{misc},
                         oktorun     => sub { $args->{more_events} = $_[0]; },
+                        stats       => $args->{stats},
                      );
                      if ( $event ) {
                         $args->{event} = $event;
@@ -12676,7 +12686,6 @@ sub main {
                      groupby         => \@groupby,
                      orderby         => \@orderby,
                      files           => \@read_files,
-                     stats           => \%stats,
                      Pipeline        => $pipeline,
                      QueryReview     => $qv,
                      ExplainAnalyzer => $exa,
@@ -12685,6 +12694,28 @@ sub main {
                }
                else {
                   print "\n# No events processed.\n";
+               }
+
+               if ( $o->get('statistics') ) {
+                  if ( keys %stats ) {
+                     my $report = new ReportFormatter(
+                        line_width => 74,
+                     );
+                     $report->set_columns(
+                        { name => 'Statistic',                    },
+                        { name => 'Value',     right_justify => 1 },
+                     );
+                     foreach my $stat ( sort keys %stats ) {
+                        $report->add_line($stat, $stats{$stat} || 0);
+
+                        # Reset stats for next iteration.
+                        $stats{$stat} = 0;
+                     }
+                     print "\n" . $report->get_report();
+                  }
+                  else {
+                     print "\n# No statistics values.\n";
+                  }
                }
 
                # Decrement iters_left after finishing an iter because in the
@@ -13354,28 +13385,6 @@ sub print_reports {
       $pipeline->reset();
 
       print "\n" . $report->get_report();
-   }
-
-   if ( $o->get('statistics') ) {
-      if ( keys %$stats ) {
-         my $report = new ReportFormatter(
-            line_width => 74,
-         );
-         $report->set_columns(
-            { name => 'Statistic',                    },
-            { name => 'Value',     right_justify => 1 },
-         );
-         foreach my $stat ( sort keys %$stats ) {
-            $report->add_line($stat, $stats->{$stat} || 0);
-
-            # Reset stats for next iteration.
-            $stats->{$stat} = 0;
-         }
-         print "\n" . $report->get_report();
-      }
-      else {
-         print "\n# No statistics values.\n";
-      }
    }
 
    return;
