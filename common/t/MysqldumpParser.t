@@ -9,7 +9,8 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 4;
+use Test::More tests => 5;
+
 
 use MaatkitTest;
 use MysqldumpParser;
@@ -532,6 +533,25 @@ is_deeply(
       mysql  => $mysql_tables,
    },
    "all-dbs.txt"
+);
+
+is_deeply(
+   $p->parse_create_tables(file => "$in/dump001.txt"),
+   {
+      test => [
+"CREATE TABLE `a` (
+  `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
+  `c2` varchar(45) NOT NULL
+);",
+
+"CREATE TABLE `b` (
+  `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
+  `c2` varchar(45) NOT NULL,
+  `c3` varchar(45) NOT NULL,
+);",
+      ],
+   },
+   "dump001.txt"
 );
 
 # #############################################################################
