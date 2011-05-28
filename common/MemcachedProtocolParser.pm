@@ -58,8 +58,7 @@ sub parse_event {
    # TODO: It seems we don't handle FIN here?  So I moved this code block here.
    if ( $packet->{data_len} == 0 ) {
       MKDEBUG && _d('No TCP data');
-      # Do not count stats for this because there will probably be A LOT
-      # of zero-data TCP control statements.
+      $args{stats}->{no_tcp_data}++ if $args{stats};
       return;
    }
 
