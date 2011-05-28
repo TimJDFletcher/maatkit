@@ -147,7 +147,7 @@ sub execute {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
                if ( $stats ) {
-                  $stats->{"pipeline_restarted_after"
+                  $stats->{"pipeline_restarted_after_"
                      .$self->{names}->[$procno]}++;
                }
                last PIPELINE_PROCESS;
