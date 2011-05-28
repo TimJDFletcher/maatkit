@@ -131,7 +131,7 @@ sub parse_event {
 # Handles a packet from the server given the state of the session.  Returns an
 # event if one was ready to be created, otherwise returns nothing.
 sub _packet_from_server {
-   my ( $self, $packet, $session ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
