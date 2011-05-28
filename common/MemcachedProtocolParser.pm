@@ -58,6 +58,8 @@ sub parse_event {
    # TODO: It seems we don't handle FIN here?  So I moved this code block here.
    if ( $packet->{data_len} == 0 ) {
       MKDEBUG && _d('No TCP data');
+      # Do not count stats for this because there will probably be A LOT
+      # of zero-data TCP control statements.
       return;
    }
 
@@ -141,6 +143,7 @@ sub _packet_from_server {
    # mid-stream.
    if ( !$session->{state} ) {
       MKDEBUG && _d('Ignoring mid-stream server response');
+      $args{stats}->{ignored_midstream_server_response}++ if $args{stats};
       return;
    }
 
@@ -372,26 +375,6 @@ sub _get_errors_fh {
 
    $self->{errors_fh} = $errors_fh;
    return $errors_fh;
-}
-
-sub fail_session {
-   my ( $self, $session, $reason ) = @_;
-   my $errors_fh = $self->_get_errors_fh();
-   if ( $errors_fh ) {
-      $session->{reason_for_failure} = $reason;
-      my $session_dump = '# ' . Dumper($session);
-      chomp $session_dump;
-      $session_dump =~ s/\n/\n# /g;
-      print $errors_fh "$session_dump\n";
-      {
-         local $LIST_SEPARATOR = "\n";
-         print $errors_fh "@{$session->{raw_packets}}";
-         print $errors_fh "\n";
-      }
-   }
-   MKDEBUG && _d('Failed session', $session->{client}, 'because', $reason);
-   delete $self->{sessions}->{$session->{client}};
-   return;
 }
 
 sub _d {
