@@ -117,6 +117,8 @@ sub execute {
    my $pipeline_data = $args{pipeline_data} || {};
    $pipeline_data->{oktorun} = $oktorun;
 
+   my $stats = $args{stats};  # optional
+
    MKDEBUG && _d("Pipeline starting at", time);
    my $instrument = $self->{instrument};
    my $processes  = $self->{procs};
@@ -144,6 +146,10 @@ sub execute {
             if ( !$output ) {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
+               if ( $stats ) {
+                  $stats->{"pipeline_restarted_after"
+                     .$self->{names}->[$procno]}++;
+               }
                last PIPELINE_PROCESS;
             }
             $procno++;
