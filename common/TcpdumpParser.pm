@@ -96,6 +96,8 @@ sub parse_event {
       $packet->{pos_in_log} = $pos_in_log;
       $packet->{raw_packet} = $raw_packet;
 
+      $args{stats}->{events_read}++ if $args{stats};
+
       return $packet;
    }
 

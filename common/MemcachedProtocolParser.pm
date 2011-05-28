@@ -52,6 +52,15 @@ sub parse_event {
    }
    my $packet = @args{@required_args};
 
+   # Return early if there's no TCP data.  These are usually ACK packets, but
+   # they could also be FINs in which case, we should close and delete the
+   # client's session.
+   # TODO: It seems we don't handle FIN here?  So I moved this code block here.
+   if ( $packet->{data_len} == 0 ) {
+      MKDEBUG && _d('No TCP data');
+      return;
+   }
+
    my $src_host = "$packet->{src_host}:$packet->{src_port}";
    my $dst_host = "$packet->{dst_host}:$packet->{dst_port}";
 
@@ -59,6 +68,7 @@ sub parse_event {
       $server .= ":$self->{port}";
       if ( $src_host ne $server && $dst_host ne $server ) {
          MKDEBUG && _d('Packet is not to or from', $server);
+         $args{stats}->{not_watched_server}++ if $args{stats};
          return;
       }
    }
@@ -93,16 +103,10 @@ sub parse_event {
    };
    my $session = $self->{sessions}->{$client};
 
-   # Return early if there's no TCP data.  These are usually ACK packets, but
-   # they could also be FINs in which case, we should close and delete the
-   # client's session.
-   if ( $packet->{data_len} == 0 ) {
-      MKDEBUG && _d('No TCP data');
-      return;
-   }
-
    # Save raw packets to dump later in case something fails.
    push @{$session->{raw_packets}}, $packet->{raw_packet};
+
+   $args{stats}->{events_parsed}++ if $args{stats};
 
    # Finally, parse the packet and maybe create an event.
    $packet->{data} = pack('H*', $packet->{data});
