@@ -152,7 +152,10 @@ sub _packet_from_server {
       MKDEBUG && _d('State is awaiting reply');
       # \r\n == 0d0a
       my ($line1, $rest) = $packet->{data} =~ m/\A(.*?)\r\n(.*)?/s;
-      die "Unknown memcached data from server" unless $line1;
+      if ( !$line1 ) {
+         $args{stats}->{unknown_server_data}++ if $args{stats};
+         die "Unknown memcached data from server";
+      }
 
       # Split up the first line into its parts.
       my @vals = $line1 =~ m/(\S+)/g;
@@ -172,12 +175,14 @@ sub _packet_from_server {
          my ($key, $flags, $bytes) = @vals;
          defined $session->{flags} or $session->{flags} = $flags;
          defined $session->{bytes} or $session->{bytes} = $bytes;
-         # Get the value from the $rest. TODO: there might be multiple responses
+
+         # Get the value from the $rest.
+         # TODO: there might be multiple responses
          if ( $rest && $bytes ) {
             MKDEBUG && _d('There is a value');
             if ( length($rest) > $bytes ) {
-               MKDEBUG && _d('Looks like we got the whole response');
-               $session->{val} = substr($rest, 0, $bytes); # Got the whole response.
+               MKDEBUG && _d('Got complete response');
+               $session->{val} = substr($rest, 0, $bytes);
             }
             else {
                MKDEBUG && _d('Got partial response, saving for later');
@@ -198,6 +203,9 @@ sub _packet_from_server {
          # Not really sure what else would get us here... want to make a note
          # and not have an uncaught condition.
          MKDEBUG && _d('Unknown result');
+      }
+      else {
+         $args{stats}->{unknown_server_response}++ if $args{stats};
       }
    }
    else { # Should be 'partial recv'
@@ -257,9 +265,10 @@ sub _packet_from_client {
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
       if ( !$line1 ) {
          MKDEBUG && _d('Unknown memcached data from client, skipping packet');
-         $args{stats}->{unknown_memcached_data_from_client}++ if $args{stats};
+         $args{stats}->{unknown_client_data}++ if $args{stats};
          return;
       }
+
       # TODO: handle <cas unique> and [noreply]
       my @vals = $line1 =~ m/(\S+)/g;
       $cmd = lc shift @vals;
@@ -287,7 +296,10 @@ sub _packet_from_client {
       }
       else {
          MKDEBUG && _d("Don't know how to handle", $cmd, "command");
+         $args{stats}->{unknown_client_command}++ if $args{stats};
+         return;
       }
+
       @{$session}{qw(cmd key flags exptime)}
          = ($cmd, $key, $flags, $exptime);
       $session->{host}       = $packet->{src_host};
@@ -305,7 +317,7 @@ sub _packet_from_client {
    $session->{state} = 'awaiting reply'; # Assume we got the whole packet
    if ( $val ) {
       if ( $session->{bytes} + 2 == length($val) ) { # +2 for the \r\n
-         MKDEBUG && _d('Got the whole thing');
+         MKDEBUG && _d('Complete send');
          $val =~ s/\r\n\Z//; # We got the whole thing.
          $session->{val} = $val;
       }
