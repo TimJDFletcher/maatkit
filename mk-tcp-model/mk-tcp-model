@@ -1560,7 +1560,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SimpleTCPDumpParser package 7472
+# SimpleTCPDumpParser package 7515
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SimpleTCPDumpParser.pm
@@ -1608,28 +1608,56 @@ sub parse_event {
       my $unix_timestamp = make_ts($ts) . $us;
 
       if ( $dst =~ m/\.$self->{port}$/o ) {
-         $sessions->{$src} = {
-            pos_in_log => $pos_in_log,
-            ts         => $unix_timestamp,
-            id         => $self->{requests}++,
-         };
+         my $event;
+         if ( exists $sessions->{$src} && $sessions->{$src}->{status} eq 'R' ) {
+            $event = $self->make_event($src);
+         }
+         if ( exists $sessions->{$src} ) {
+            $sessions->{$src}->{ts} = $unix_timestamp;
+         }
+         else {
+            $sessions->{$src} ||= {
+               pos_in_log => $pos_in_log,
+               ts         => $unix_timestamp,
+               ts0        => $unix_timestamp,
+               id         => $self->{requests}++,
+               status     => 'Q',
+            };
+         }
+         return $event if $event;
       }
 
       elsif (defined (my $event = $sessions->{$dst}) ) {
-         my ( $src_host, $src_port ) = $dst =~ m/^(.*)\.(\d+)$/;
-         $event->{end}  = $unix_timestamp;
-         $event->{host} = $src_host;
-         $event->{port} = $src_port;
-         $event->{arg}  = undef;
-         MKDEBUG && _d('Properties of event:', Dumper($event));
-         delete $sessions->{$dst};
-         return $event;
+         $event->{status} = 'R',
+         $event->{end}  ||= $unix_timestamp;
+         $event->{end1}   = $unix_timestamp;
       }
       $pos_in_log = $tell->();
    } # EVENT
 
+   foreach my $src ( keys %$sessions ) {
+      my $event = $self->make_event($src);
+      return $event if $event;
+   }
+
    $args{oktorun}->(0) if $args{oktorun};
    return;
+}
+
+sub make_event {
+   my ( $self, $src ) = @_;
+   my $event = $self->{sessions}->{$src};
+   delete $self->{sessions}->{$src};
+   if ( $event->{status} eq 'R' ) {
+      my ( $src_host, $src_port ) = $src =~ m/^(.*)\.(\d+)$/;
+      $event->{host} = $src_host;
+      $event->{port} = $src_port;
+      $event->{arg}  = undef;
+      delete $event->{status};
+      MKDEBUG && _d('Properties of event:', Dumper($event));
+      return $event;
+   }
+   return undef;
 }
 
 {
@@ -1660,7 +1688,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TCPRequestAggregator package 7473
+# TCPRequestAggregator package 7515
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TCPRequestAggregator.pm
@@ -1686,7 +1714,7 @@ sub new {
    my $self = {
       buffer             => [],
       last_weighted_time => 0,
-      last_res_time      => 0,
+      last_busy_time     => 0,
       last_completions   => 0,
       current_ts         => 0,
       %args,
@@ -1768,7 +1796,7 @@ sub parse_event {
          MKDEBUG && _d("Timestamp doesn't belong to this interval");
          if ( $self->{in_prg} ) {
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $t_start);
-            $self->{res_time}      += $t_start - $self->{current_ts};
+            $self->{busy_time}     += $t_start - $self->{current_ts};
             $self->{weighted_time} += ($t_start - $self->{current_ts}) * $self->{in_prg};
          }
 
@@ -1790,7 +1818,7 @@ sub parse_event {
       else {
          if ( $self->{in_prg} ) {
             MKDEBUG && _d("Computing from", $self->{current_ts}, "to", $timestamp);
-            $self->{res_time}      += $timestamp - $self->{current_ts};
+            $self->{busy_time}     += $timestamp - $self->{current_ts};
             $self->{weighted_time} += ($timestamp - $self->{current_ts}) * $self->{in_prg};
          }
          $self->{current_ts} = $timestamp;
@@ -1838,8 +1866,8 @@ sub make_event {
    my $e_throughput = sprintf( "%.6f", $e_arrivals / ( $t_end - $t_start ) );
    my $e_completions
       = ( $self->{completions} - $self->{last_completions} );
-   my $e_res_time
-      = sprintf( "%.6f", $self->{res_time} - $self->{last_res_time} );
+   my $e_busy_time
+      = sprintf( "%.6f", $self->{busy_time} - $self->{last_busy_time} );
    my $e_weighted_time = sprintf( "%.6f",
       $self->{weighted_time} - $self->{last_weighted_time} );
    my $e_sum_time = sprintf("%.6f", $sum_times || 0);
@@ -1852,7 +1880,7 @@ sub make_event {
       throughput    => $e_throughput,
       arrivals      => $e_arrivals,
       completions   => $e_completions,
-      res_time      => $e_res_time ,
+      busy_time     => $e_busy_time,
       weighted_time => $e_weighted_time,
       sum_time      => $e_sum_time,
       variance_mean => $e_variance_mean,
@@ -1864,7 +1892,7 @@ sub make_event {
    $self->{t_start}            = $t_end;  # Not current_timestamp!
    $self->{current_ts}         = $t_end;  # Next iteration will begin at boundary
    $self->{last_weighted_time} = $self->{weighted_time};
-   $self->{last_res_time}      = $self->{res_time};
+   $self->{last_busy_time}     = $self->{busy_time};
    $self->{last_completions}   = $self->{completions};
    $self->{response_times}     = [];
 
@@ -1990,14 +2018,15 @@ sub main {
       # #####################################################################
       # This is the main loop over the events in the input file.
       # #####################################################################
+      my ($ts, $end) = @{$o->get('start-end')};
       EVENT:
       while ( $event = $get_event->() ) {
          if ( $o->get('type') eq 'tcpdump' ) {
             printf "%6d %.6f %.6f %9.6f %s:%s\n",
                $event->{id},
-               $event->{ts},
-               $event->{end},
-               $event->{end} - $event->{ts},
+               $event->{$ts},
+               $event->{$end},
+               $event->{$end} - $event->{$ts},
                $event->{host},
                $event->{port};
          }
@@ -2091,6 +2120,14 @@ response time metrics for each interval:
 
  mk-tcp-model --type=requests --run-time=10 sorted.txt > sliced.txt
 
+Transform the result for modeling with Aspersa's usl tool, discarding the first
+and last line of each file if you specify multiple files (the first and last
+line are normally incomplete observation periods and are aberrant):
+
+ for f in sliced.txt; do
+    tail -n +2 "$f" | head -n -1 | awk '{print $2, $3, $7/$4}'
+ done > usl-input.txt
+
 =head1 RISKS
 
 The following section is included to inform users about the potential risks,
@@ -2115,26 +2152,29 @@ See also L<"BUGS"> for more information on filing bugs and getting help.
 
 This tool recognizes requests and responses in a TCP stream, and extracts the
 "conversations".  You can use it to capture the response times of individual
-queries to a database, for example.  It expects the input to be in the following
-format, which should result from the sample shown in the SYNOPSIS:
+queries to a database, for example.  It expects the TCP input to be in the
+following format, which should result from the sample shown in the SYNOPSIS:
 
  <date> <time.microseconds> IP <IP.port> > <IP.port>: <junk>
 
 The tool watches for "incoming" packets to the port you specify with the
 L<"--watch-server"> option.  This begins a request.  If multiple inbound packets
-follow each other, then the last inbound packet seen determines the time at
-which the request is assumed to begin.  This is logical if one assumes that a
-server must receive the whole SQL statement before beginning execution, for
-example.
+follow each other, then by default the last inbound packet seen determines the
+time at which the request is assumed to begin.  This is logical if one assumes
+that a server must receive the whole SQL statement before beginning execution,
+for example.
 
-When the first outbound packet is seen, that concludes the request.  We might
-see an inbound packet, but never see a response.  This can happen when the
-kernel drops packets, for example.  As a result, we never print a request until
-we see the response to it, which means that the output is in completion order,
-not arrival order.  This can be useful for some kinds of analysis, but others
-require processing in arrival order.  Therefore, the second type of processing
-this tool can do requires that you sort the output from the first stage and
-supply it as input.
+When the first outbound packet is seen, the server is considered to have
+responded to the request.  The tool might see an inbound packet, but never see a
+response.  This can happen when the kernel drops packets, for example.  As a
+result, the tool never prints a request unless it sees the response to it.
+However, the tool actually does not print any request until it sees the "last"
+outbound packet.  It determines this by waiting for either another inbound
+packet, or EOF, and then considers the previous inbound/outbound pair to be
+complete.  As a result, the tool prints requests in a relatively random order.
+Most types of analysis require processing in either arrival or completion order.
+Therefore, the second type of processing this tool can do requires that you sort
+the output from the first stage and supply it as input.
 
 The second type of processing is selected with the L<"--type"> option set to
 "requests".  In this mode, the tool reads a group of requests and aggregates
@@ -2145,10 +2185,16 @@ them, then emits the aggregated metrics.
 In the default mode (parsing tcpdump output), requests are printed out one per
 line, in the following format:
 
- <id> <start-time> <end-time> <elapsed> <IP:port>
+ <id> <start> <end> <elapsed> <IP:port>
+
+The ID is an incrementing number, assigned in arrival order in the original TCP
+traffic.  The start and end timestamps, and the elapsed time, can be customized
+with the L<"--start-end"> option.
 
 In "--type=requests" mode, the tool prints out one line per time interval as
-defined by L<"--run-time">, with the following columns:
+defined by L<"--run-time">, with the following columns: ts, concurrency,
+throughput, arrivals, completions, busy_time, weighted_time, sum_time,
+variance_mean, quantile_time, obs_time.  A detailed explanation follows:
 
 =over
 
@@ -2172,7 +2218,7 @@ The number of arrivals during the interval.
 
 The number of completions during the interval.
 
-=item res_time
+=item busy_time
 
 The total amount of time during which at least one request was resident in
 the server during the interval.
@@ -2218,6 +2264,26 @@ type: Array
 
 Read this comma-separated list of config files; if specified, this must be the
 first option on the command line.
+
+=item --start-end
+
+type: Array; default: ts,end
+
+Define how the arrival and completion timestamps of a query, and thus its
+response time (elapsed time) are computed.  Recall that there may be multiple
+inbound and outbound packets per request and response, and refer to the
+following ASCII diagram.  Suppose that a client sends a series of three inbound
+(I) packets to the server, whch computes the result and then sends two outbound
+(O) packets back:
+
+  I I    I ..................... O    O
+  |<---->|<---response time----->|<-->|
+  ts0    ts                      end  end1
+
+By default, the query is considered to arrive at time ts, and complete at time
+end.  However, this might not be what you want.  Perhaps you do not want to
+consider the query to have completed until time end1.  You can accomplish this
+by setting this option to C<ts,end1>.
 
 =item --help
 
