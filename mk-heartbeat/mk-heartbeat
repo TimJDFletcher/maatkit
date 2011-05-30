@@ -3368,6 +3368,22 @@ sub main {
    elsif ( $tbl_struct->{is_col}->{server_id} ) {
       # Multi-update mode requires --master-server-id.
       if ( !$o->get('update') && !$master_server_id ) {
+         eval {
+            my $vp = new VersionParser();
+            my $ms = new MasterSlave(VersionParser => $vp);
+            my $master_dsn = $ms->get_master_dsn($dbh, $dsn, $dp)
+               or die "This server is not a slave";
+            my $master_dbh = $dp->get_dbh($dp->get_cxn_params($master_dsn),
+               { AutoCommit => 1 });
+            ($master_server_id)
+               = $master_dbh->selectrow_array('SELECT @@server_id');
+            $master_dbh->disconnect;
+         };
+         if ( $EVAL_ERROR ) {
+            MKDEBUG && _d("Couldn't get master server ID:", $EVAL_ERROR);
+         }
+      }
+      if ( !$o->get('update') && !$master_server_id ) {
          die "The --master-server-id option must be specified because "
             . "the heartbeat table $db_tbl uses the server_id column "
             . "for --update or --check.\n"
@@ -3892,7 +3908,8 @@ each server will update the row where C<server_id=@@server_id>.
 
 For L<"--monitor"> and L<"--check"> it is therefore necessary to specify
 the L<"--master-server-id"> option so that the tool can select the heartbeat 
-from from the table corresponding to the chosen server.
+corresponding to the chosen server.  If you don't specify this, the tool uses
+the heartbeat corresponding to the server's immediate master.
 
 For example, if the replication hierarchy is "master -> slave1 -> slave2"
 with corresponding server IDs 1, 2 and 3, you can:
@@ -4091,6 +4108,8 @@ Print all output to this file when daemonized.
 type: string
 
 Calculate delay from this master server ID for L<"--monitor"> or L<"--check">.
+If not given, mk-heartbeat attempts to connect to the server's master and
+determine its server_id.
 
 =item --monitor
 
