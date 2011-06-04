@@ -1,6 +1,7 @@
 Changelog for mk-heartbeat:
 
    * Removed --quiet option.
+   * Added --[no]insert-heartbeat-row option (issue 1292).
    * Added --print-master-server-id option (issue 1292).
    * Changed default heartbeat table structure (issue 1292).
    * The tool crashed if only --stop was specified.

@@ -9,4 +9,3 @@ CREATE TABLE heartbeat (
   relay_master_log_file varchar(255) DEFAULT NULL,    -- SHOW SLAVE STATUS 
   exec_master_log_pos   bigint unsigned DEFAULT NULL  -- SHOW SLAVE STATUS
 ) ENGINE=MEMORY;
-INSERT INTO heartbeat (ts, server_id) VALUES (NOW(), @@server_id);

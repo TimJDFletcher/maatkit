@@ -60,7 +60,7 @@ foreach my $port (@ports) {
 
    ok(
       -f "$pid_file.$port",
-      "Server $port started"
+      "--update on $port started"
    );
 }
 
@@ -223,12 +223,13 @@ like(
 
 $output = output(
    sub { mk_heartbeat::main(qw(-h 127.1 -P 12347 -u msandbox -p msandbox),
-      qw(-D test --check --print-master-server-id --master-server-id 42)) },
+      qw(-D test --check --print-master-server-id --master-server-id 42),
+      qw(--no-insert-heartbeat-row)) },
 );
 
 like(
    $output,
-   qr/No row found in the heartbeat table for server_id 42/,
+   qr/No row found in heartbeat table for server_id 42/,
    "Error if --master-server-id row doesn't exist"
 );
 
@@ -241,7 +242,7 @@ sleep 1;
 foreach my $port (@ports) {
    ok(
       !-f "$pid_file.$port",
-      "Server $port stopped"
+      "--update on $port stopped"
    );
 }
 

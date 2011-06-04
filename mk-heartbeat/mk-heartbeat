@@ -3415,26 +3415,30 @@ sub main {
    # Check that heartbeat table has at least 1 row unless --replace because
    # --replace will create the row if it doesn't exist.
    if ( !$o->get('replace') ) {
-      my $sql;
-      if ( $id ) {
-         $sql = "SELECT 1 FROM $db_tbl WHERE id=1";
-      }
-      else {
-         $sql = "SELECT 1 FROM $db_tbl WHERE $pk_col='$pk_val' LIMIT 1";
-      }
-      MKDEBUG && _d($dbh, $sql);
+      my $sql = "SELECT 1 FROM $db_tbl WHERE $pk_col='$pk_val' LIMIT 1";
+      MKDEBUG && _d($sql);
       my $row = $dbh->selectall_arrayref($sql);
       if ( scalar @$row == 0 ) {
-         if ( $id ) {
-            die "The heartbeat table is empty.\n"
-               . "At least one row must be inserted into the heartbeat table.\n"
-               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         MKDEBUG && _d('No heartbeat row in table');
+         if ( $o->get('insert-heartbeat-row') ) {
+            my $sql = "INSERT INTO $db_tbl ($pk_col, ts) "
+                    . "VALUES ('$pk_val', NOW())";
+            MKDEBUG && _d($sql);
+            $dbh->do($sql);
          }
          else {
-            die "No row found in the heartbeat table for server_id $pk_val.\n"
-               . "At least one row must be inserted into the heartbeat table "
-               . "for server_id $pk_val.\n"
-               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+            if ( $id ) {
+               die "The heartbeat table is empty.\n"
+                  . "At least one row must be inserted into the heartbeat "
+                  . "table.\nPlease read the DESCRIPTION section of the "
+                  . "mk-heartbeat POD.\n";
+           }
+           else {
+               die "No row found in heartbeat table for server_id $pk_val.\n"
+                  . "At least one row must be inserted into the heartbeat "
+                  . "table for server_id $pk_val.\nPlease read the "
+                  . "DESCRIPTION section of the mk-heartbeat POD.\n";
+           }
          }
       }
    }
@@ -3896,10 +3900,15 @@ difference from the current system time.  If replication between the slave and
 the master is delayed or broken, the computed difference will be greater than
 zero and potentially increase if L<"--monitor"> is specified.
 
-You must either manually create a heartbeat table on the master and insert one
-row, or use L<"--create-table">.  See L<"--create-table"> for the proper
-heartbeat table structure.  The C<MEMORY> storage engine is suggested, but not
+You must either manually create the heartbeat table on the master or use
+L<"--create-table">.  See L<"--create-table"> for the proper heartbeat
+table structure.  The C<MEMORY> storage engine is suggested, but not
 required of course, for MySQL.
+
+The heartbeat table must contain a heartbeat row.  By default, a heartbeat
+row is inserted if it doesn't exist.  This feature can be disabled with the
+L<"--[no]insert-heartbeat-row"> option in case the database user does not
+have INSERT privileges.
 
 mk-heartbeat depends only on the heartbeat record being replicated to the slave,
 so it works regardless of the replication mechanism (built-in replication, a
@@ -4098,6 +4107,18 @@ Show help and exit.
 short form: -h; type: string
 
 Connect to host.
+
+=item --[no]insert-heartbeat-row
+
+default: yes
+
+Insert a heartbeat row in the L<"--table"> if one doesn't exist.
+
+The heartbeat L<"--table"> requires a heartbeat row, else there's nothing
+to L<"--update">, L<"--monitor">, or L<"--check">!  By default, the tool will
+insert a heartbeat row if one is not already present.  You can disable this
+feature by specifying C<--no-insert-heartbeat-row> in case the database user
+does not have INSERT privileges.
 
 =item --interval
 

@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 16;
+   plan tests => 17;
 }
 
 $sb->create_dbs($dbh, ['test']);
@@ -41,11 +41,21 @@ $dbh->do(q{CREATE TABLE test.heartbeat (
           ) ENGINE=MEMORY});
 
 # Issue: mk-heartbeat should check that the heartbeat table has a row
-$output = `$cmd -D test --check 2>&1`;
+$output = `$cmd -D test --check --no-insert-heartbeat-row 2>&1`;
 like($output, qr/heartbeat table is empty/ms, 'Dies on empty heartbeat table with --check (issue 45)');
 
-$output = `$cmd -D test --monitor --run-time 1s 2>&1`;
+$output = `$cmd -D test --monitor --run-time 1s --no-insert-heartbeat-row 2>&1`;
 like($output, qr/heartbeat table is empty/ms, 'Dies on empty heartbeat table with --monitor (issue 45)');
+
+$output = output(
+   sub { mk_heartbeat::main('-F', $cnf, qw(-D test --check)) },
+);
+my $row = $dbh->selectall_hashref('select * from test.heartbeat', 'id');
+is(
+   $row->{1}->{id},
+   1,
+   "Automatically inserts heartbeat row (issue 1292)"
+);
 
 # Run one instance with --replace to create the table.
 `$cmd -D test --update --replace --run-time 1s`;
