@@ -3255,6 +3255,10 @@ sub main {
       if ( $o->get('interval') < 0.01 ) {
          $o->save_error("--interval must be >= 0.01");
       }
+
+      if ( !$o->get('stop') && !$o->get('database') ) {
+         $o->save_error('--database must be specified');
+      }
    }
 
    $o->usage_or_errors();
@@ -3271,7 +3275,6 @@ sub main {
    my $frames   = $o->get('frames');
    my $db       = $o->get('database');
    my $tbl      = $o->get('table');
-   my $db_tbl   = $q->quote($db, $tbl);
 
    # ########################################################################
    # Create --sentinel file if --stop was given, and possibly exit.
@@ -3284,8 +3287,7 @@ sub main {
          or die "Cannot write to $sentinel: $OS_ERROR\n";
       close $file
          or die "Cannot close $sentinel: $OS_ERROR\n";
-      print STDOUT "Successfully created file $sentinel\n"
-         unless $o->get('quiet');
+      print STDOUT "Successfully created file $sentinel\n";
       # Exit only if no other action (update, monitor, check) is given.
       if ( !$o->get('update') && !$o->get('check') && !$o->get('monitor') ) {
          MKDEBUG && _d("Nothing more to do, quitting");
@@ -3321,6 +3323,7 @@ sub main {
    # ########################################################################
    # Create the heartbeat table if --create-table was given.
    # ########################################################################
+   my $db_tbl    = $q->quote($db, $tbl);
    my $server_id = $dbh->selectrow_array('SELECT @@server_id');
    if ( $o->get('create-table') ) {
       my $sql = $o->read_para_after(__FILE__, qr/MAGIC_create_heartbeat/);
@@ -3359,38 +3362,50 @@ sub main {
          . "a server_id column";
    }
 
-   my $master_server_id = $o->get('master-server-id');
+   # pk_col and pk_val are used to identify the heartbeat row to update or
+   # or monitor.
    my ($pk_col, $pk_val);
-   if ( $id ) { # legacy mode
+   if ( $id ) {
+      # Legacy mode: update heartbeat row WHERE id=1 and monitor heartbeat
+      # row WHERE id=1.
       $pk_col = 'id';
       $pk_val = '1';
    }
    elsif ( $tbl_struct->{is_col}->{server_id} ) {
-      # Multi-update mode requires --master-server-id.
-      if ( !$o->get('update') && !$master_server_id ) {
-         eval {
-            my $vp = new VersionParser();
-            my $ms = new MasterSlave(VersionParser => $vp);
-            my $master_dsn = $ms->get_master_dsn($dbh, $dsn, $dp)
-               or die "This server is not a slave";
-            my $master_dbh = $dp->get_dbh($dp->get_cxn_params($master_dsn),
-               { AutoCommit => 1 });
-            ($master_server_id)
-               = $master_dbh->selectrow_array('SELECT @@server_id');
-            $master_dbh->disconnect;
-         };
-         if ( $EVAL_ERROR ) {
-            MKDEBUG && _d("Couldn't get master server ID:", $EVAL_ERROR);
+      # Multi-update mode: update heartbeat row WHERE server_id=@@server_id
+      # and monitor heartbeat row WHERE server_id=master_server_id.
+      if ( $o->get('update') ) {
+         $pk_col = 'server_id';
+         $pk_val = $server_id;
+      }
+      else {  # monitor or check
+         my $master_server_id = $o->get('master-server-id');
+         if ( !$master_server_id ) {
+            eval {
+               my $vp = new VersionParser();
+               my $ms = new MasterSlave(VersionParser => $vp);
+               my $master_dsn = $ms->get_master_dsn($dbh, $dsn, $dp)
+                  or die "This server is not a slave";
+               my $master_dbh = $dp->get_dbh($dp->get_cxn_params($master_dsn),
+                  { AutoCommit => 1 });
+               ($master_server_id)
+                  = $master_dbh->selectrow_array('SELECT @@server_id');
+               $master_dbh->disconnect;
+            };
+            if ( $EVAL_ERROR ) {
+               MKDEBUG && _d("Error determining master id:", $EVAL_ERROR);
+            }
          }
+         if ( !$master_server_id ) {
+            die "The --master-server-id option must be specified because "
+               . "the heartbeat table $db_tbl uses the server_id column "
+               . "for --update or --check but the server's master could "
+               . "not be automatically determined.\n"
+               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         }
+         $pk_col = 'server_id';
+         $pk_val = $master_server_id;
       }
-      if ( !$o->get('update') && !$master_server_id ) {
-         die "The --master-server-id option must be specified because "
-            . "the heartbeat table $db_tbl uses the server_id column "
-            . "for --update or --check.\n"
-            . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
-      }
-      $pk_col = 'server_id';
-      $pk_val = $server_id;
    }
    else {
       die "Heartbeat table $db_tbl does not have a server_id or id column";
@@ -3405,19 +3420,25 @@ sub main {
          $sql = "SELECT 1 FROM $db_tbl WHERE id=1";
       }
       else {
-         $sql = "SELECT 1 FROM $db_tbl "
-              . "WHERE $pk_col='"
-              . ($o->get('update') ? $pk_val : $master_server_id) . "' "
-              . "LIMIT 1";
+         $sql = "SELECT 1 FROM $db_tbl WHERE $pk_col='$pk_val' LIMIT 1";
       }
       MKDEBUG && _d($dbh, $sql);
       my $row = $dbh->selectall_arrayref($sql);
       if ( scalar @$row == 0 ) {
-         die "The heartbeat table is empty.\n"
-            . "At least one row must be inserted into the heartbeat table.\n"
-            . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         if ( $id ) {
+            die "The heartbeat table is empty.\n"
+               . "At least one row must be inserted into the heartbeat table.\n"
+               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         }
+         else {
+            die "No row found in the heartbeat table for server_id $pk_val.\n"
+               . "At least one row must be inserted into the heartbeat table "
+               . "for server_id $pk_val.\n"
+               . "Please read the DESCRIPTION section of the mk-heartbeat POD.\n";
+         }
       }
    }
+
    # ########################################################################
    # Make sth for updating or checking the heartbeat table.
    # ########################################################################
@@ -3501,7 +3522,7 @@ sub main {
          . ($dbi_driver eq 'mysql' ? '/*!50038, @@hostname AS host*/' : '')
          . ($id ? "" : ", server_id")
          . " FROM $db_tbl "
-         . "WHERE $pk_col='" . ($id || $master_server_id) . "' "
+         . "WHERE $pk_col='$pk_val' "
          . "LIMIT 1";
       MKDEBUG && _d("SELECT SQL:", $heartbeat_sql);
 
@@ -3526,7 +3547,7 @@ sub main {
          $delay = 0.00 if $delay < 0;
 
          $sth->finish();
-         return ($delay, $hostname);
+         return ($delay, $hostname, $pk_val);
       };
    }
 
@@ -3556,16 +3577,6 @@ sub main {
    }
 
    # ########################################################################
-   # Setup moving averages for --frames.
-   # ########################################################################
-   my @samples;
-   my $limit  = max(@$frames);
-
-   # 2.00s [  0.05s,  0.01s,  0.00s ]
-   my $format = ($hires_ts ? '%.2f' : '%4d') . "s "
-              . "[ " . join(", ", map { "%5.2fs" } @$frames) . " ]\n";
-
-   # ########################################################################
    # --check and exit if --check was given.
    # ########################################################################
    if ( $o->get('check') ) { 
@@ -3585,6 +3596,18 @@ sub main {
       disconnect($dbh, $heartbeat_sth);
       return 0;
    }
+
+   # ########################################################################
+   # Setup moving averages for --frames.
+   # ########################################################################
+   my @samples;
+   my $limit  = max(@$frames);
+
+   # 2.00s [  0.05s,  0.01s,  0.00s ]
+   my $format = ($hires_ts ? '%.2f' : '%4d') . "s "
+              . "[ " . join(", ", map { "%5.2fs" } @$frames) . " ]"
+              . ($o->get('print-master-server-id') ? " %d" : '')
+              . "\n";
 
    # ########################################################################
    # Monitor or update the heartbeat table.
@@ -3632,7 +3655,7 @@ sub main {
                sum(@samples[0 .. $bound-1]) / $_;
             } @$frames;
 
-            my $output = sprintf $format, $delay, @vals;
+            my $output = sprintf $format, $delay, @vals, $pk_val;
             if ( my $file = $o->get('file') ) { 
                open my $file, '>', $file
                   or die "Can't open $file: $OS_ERROR";
@@ -3642,7 +3665,7 @@ sub main {
                   or die "Can't close $file: $OS_ERROR";
             }
             else {
-               print $output unless $o->get('quiet');
+               print $output;
             }
          }
          else { # --update mode
@@ -3704,7 +3727,9 @@ sub check_delay {
       push @sths, [ $dsn, $sth ];
    }
 
-   my $format_delay = ($args{hires_ts} ? '%.2f' : '%d') . "\n";
+   my $format_delay = ($args{hires_ts} ? '%.2f' : '%d')
+                    . ($o->get('print-master-server-id') ? " %d" : "")
+                    . "\n";
    my $format_host  = "%-20s $format_delay";
 
    # Before hi-res ts, we could check all slaves at one interval, assuming
@@ -3727,7 +3752,7 @@ sub check_delay {
       }
       sleep $next_interval - time;
       MKDEBUG && _d('Woke up at', ts(time));
-      my ($delay, $hostname) = $get_delay->($sth);
+      my ($delay, $hostname, $master_server_id) = $get_delay->($sth);
 
       if ( $o->get('recurse') ) {
          # Must print not only the delay, but the server's hostname if
@@ -3737,11 +3762,11 @@ sub check_delay {
          if ( $dsn->{P} && $dsn->{P} ne '3306' ) {
             $host .= ":$dsn->{P}";
          }
-         printf($format_host, $host, $delay) unless $o->get('quiet');
+         printf($format_host, $host, $delay, $master_server_id);
       }
       else {
          # Just print the delay.
-         printf($format_delay, $delay) unless $o->get('quiet');
+         printf($format_delay, $delay, $master_server_id);
       }
    }
 
@@ -3865,11 +3890,11 @@ masters (see L<"MULTI-SLAVE HIERARCHY">), the server's ID (@@server_id) is
 used to identify records.
 
 The second part is a L<"--monitor"> or L<"--check"> instance of mk-heartbeat
-that connects to a slave, examines the replicated heartbeat record from the
-specified L<"--master-server-id">, and computes the difference from the
-current system time.  If replication between the slave and the specified
-master is delayed or broken, the computed difference will be greater than zero
-and potentially increase if L<"--monitor"> is specified.
+that connects to a slave, examines the replicated heartbeat record from its
+immediate master or the specified L<"--master-server-id">, and computes the
+difference from the current system time.  If replication between the slave and
+the master is delayed or broken, the computed difference will be greater than
+zero and potentially increase if L<"--monitor"> is specified.
 
 You must either manually create a heartbeat table on the master and insert one
 row, or use L<"--create-table">.  See L<"--create-table"> for the proper
@@ -4008,9 +4033,13 @@ A legacy version of the heartbeat table is still supported:
     ts datetime NOT NULL
   );
 
-The legacy table does not support L<"--update"> instances on each slave
-of a multi-slave hierarchy like "master -> slave1 -> slave2".  The tool
-automatically detects if the heartbeat table is legacy.
+Legacy tables do not support L<"--update"> instances on each slave
+of a multi-slave hierarchy like "master -> slave1 -> slave2".
+To manually insert the one required row into a legacy table:
+
+  INSERT INTO heartbeat (id, ts) VALUES (1, NOW());
+
+The tool automatically detects if the heartbeat table is legacy.
 
 See also L<"MULTI-SLAVE HIERARCHY">.
 
@@ -4143,11 +4172,11 @@ short form: -P; type: int
 
 Port number to use for connection.
 
-=item --quiet
+=item --print-master-server-id
 
-short form: -q
-
-Suppresses normal output.
+Print the auto-detected or given L<"--master-server-id">.  If L<"--check">
+or L<"--monitor"> is specified, specifying this option will print the
+auto-detected or given L<"--master-server-id"> at the end of each line.
 
 =item --recurse
 
