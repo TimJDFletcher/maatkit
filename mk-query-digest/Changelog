@@ -1,6 +1,7 @@
 Changelog for mk-query-digest:
 
    * --statistics did not print if no events were processed.
+   * Changed --statistics report format (issue 1320).
 
 2011-04-04: version 0.9.28
 

@@ -2466,7 +2466,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TcpdumpParser package 6590
+# TcpdumpParser package 7505
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TcpdumpParser.pm
@@ -2514,6 +2514,8 @@ sub parse_event {
       my $packet = $self->_parse_packet($raw_packet);
       $packet->{pos_in_log} = $pos_in_log;
       $packet->{raw_packet} = $raw_packet;
+
+      $args{stats}->{events_read}++ if $args{stats};
 
       return $packet;
    }
@@ -2597,7 +2599,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MySQLProtocolParser package 6909
+# MySQLProtocolParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MySQLProtocolParser.pm
@@ -2973,6 +2975,7 @@ sub parse_event {
       MKDEBUG && _d('Session deleted');
    }
 
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 
@@ -4487,7 +4490,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -4657,6 +4660,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -8874,7 +8881,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# MemcachedProtocolParser package 7503
+# MemcachedProtocolParser package 7521
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MemcachedProtocolParser.pm
@@ -8914,6 +8921,12 @@ sub parse_event {
    }
    my $packet = @args{@required_args};
 
+   if ( $packet->{data_len} == 0 ) {
+      MKDEBUG && _d('No TCP data');
+      $args{stats}->{no_tcp_data}++ if $args{stats};
+      return;
+   }
+
    my $src_host = "$packet->{src_host}:$packet->{src_port}";
    my $dst_host = "$packet->{dst_host}:$packet->{dst_port}";
 
@@ -8921,6 +8934,7 @@ sub parse_event {
       $server .= ":$self->{port}";
       if ( $src_host ne $server && $dst_host ne $server ) {
          MKDEBUG && _d('Packet is not to or from', $server);
+         $args{stats}->{not_watched_server}++ if $args{stats};
          return;
       }
    }
@@ -8951,11 +8965,6 @@ sub parse_event {
    };
    my $session = $self->{sessions}->{$client};
 
-   if ( $packet->{data_len} == 0 ) {
-      MKDEBUG && _d('No TCP data');
-      return;
-   }
-
    push @{$session->{raw_packets}}, $packet->{raw_packet};
 
    $packet->{data} = pack('H*', $packet->{data});
@@ -8967,15 +8976,17 @@ sub parse_event {
       $event = $self->_packet_from_client($packet, $session, %args);
    }
    else {
+      $args{stats}->{unknown_packet_origin}++ if $args{stats};
       die 'Packet origin unknown';
    }
 
    MKDEBUG && _d('Done with packet; event:', Dumper($event));
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 
 sub _packet_from_server {
-   my ( $self, $packet, $session ) = @_;
+   my ( $self, $packet, $session, %args ) = @_;
    die "I need a packet"  unless $packet;
    die "I need a session" unless $session;
 
@@ -8985,13 +8996,17 @@ sub _packet_from_server {
 
    if ( !$session->{state} ) {
       MKDEBUG && _d('Ignoring mid-stream server response');
+      $args{stats}->{ignored_midstream_server_response}++ if $args{stats};
       return;
    }
 
    if ( $session->{state} eq 'awaiting reply' ) {
       MKDEBUG && _d('State is awaiting reply');
       my ($line1, $rest) = $packet->{data} =~ m/\A(.*?)\r\n(.*)?/s;
-      die "Unknown memcached data from server" unless $line1;
+      if ( !$line1 ) {
+         $args{stats}->{unknown_server_data}++ if $args{stats};
+         die "Unknown memcached data from server";
+      }
 
       my @vals = $line1 =~ m/(\S+)/g;
       $session->{res} = shift @vals;
@@ -9010,11 +9025,12 @@ sub _packet_from_server {
          my ($key, $flags, $bytes) = @vals;
          defined $session->{flags} or $session->{flags} = $flags;
          defined $session->{bytes} or $session->{bytes} = $bytes;
+
          if ( $rest && $bytes ) {
             MKDEBUG && _d('There is a value');
             if ( length($rest) > $bytes ) {
-               MKDEBUG && _d('Looks like we got the whole response');
-               $session->{val} = substr($rest, 0, $bytes); # Got the whole response.
+               MKDEBUG && _d('Got complete response');
+               $session->{val} = substr($rest, 0, $bytes);
             }
             else {
                MKDEBUG && _d('Got partial response, saving for later');
@@ -9031,6 +9047,9 @@ sub _packet_from_server {
       }
       elsif ( $session->{res} !~ m/STORED|DELETED|NOT_FOUND/ ) {
          MKDEBUG && _d('Unknown result');
+      }
+      else {
+         $args{stats}->{unknown_server_response}++ if $args{stats};
       }
    }
    else { # Should be 'partial recv'
@@ -9085,9 +9104,10 @@ sub _packet_from_client {
       ($line1, $val) = $packet->{data} =~ m/\A(.*?)\r\n(.+)?/s;
       if ( !$line1 ) {
          MKDEBUG && _d('Unknown memcached data from client, skipping packet');
-         $args{stats}->{unknown_memcached_data_from_client}++ if $args{stats};
+         $args{stats}->{unknown_client_data}++ if $args{stats};
          return;
       }
+
       my @vals = $line1 =~ m/(\S+)/g;
       $cmd = lc shift @vals;
       MKDEBUG && _d('$cmd is a ', $cmd);
@@ -9114,7 +9134,10 @@ sub _packet_from_client {
       }
       else {
          MKDEBUG && _d("Don't know how to handle", $cmd, "command");
+         $args{stats}->{unknown_client_command}++ if $args{stats};
+         return;
       }
+
       @{$session}{qw(cmd key flags exptime)}
          = ($cmd, $key, $flags, $exptime);
       $session->{host}       = $packet->{src_host};
@@ -9129,7 +9152,7 @@ sub _packet_from_client {
    $session->{state} = 'awaiting reply'; # Assume we got the whole packet
    if ( $val ) {
       if ( $session->{bytes} + 2 == length($val) ) { # +2 for the \r\n
-         MKDEBUG && _d('Got the whole thing');
+         MKDEBUG && _d('Complete send');
          $val =~ s/\r\n\Z//; # We got the whole thing.
          $session->{val} = $val;
       }
@@ -9193,26 +9216,6 @@ sub _get_errors_fh {
 
    $self->{errors_fh} = $errors_fh;
    return $errors_fh;
-}
-
-sub fail_session {
-   my ( $self, $session, $reason ) = @_;
-   my $errors_fh = $self->_get_errors_fh();
-   if ( $errors_fh ) {
-      $session->{reason_for_failure} = $reason;
-      my $session_dump = '# ' . Dumper($session);
-      chomp $session_dump;
-      $session_dump =~ s/\n/\n# /g;
-      print $errors_fh "$session_dump\n";
-      {
-         local $LIST_SEPARATOR = "\n";
-         print $errors_fh "@{$session->{raw_packets}}";
-         print $errors_fh "\n";
-      }
-   }
-   MKDEBUG && _d('Failed session', $session->{client}, 'because', $reason);
-   delete $self->{sessions}->{$session->{client}};
-   return;
 }
 
 sub _d {
@@ -9394,7 +9397,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# BinaryLogParser package 6785
+# BinaryLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/BinaryLogParser.pm
@@ -9567,6 +9570,10 @@ sub parse_event {
       if ( $found_arg ) {
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {
@@ -9593,7 +9600,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# GeneralLogParser package 7096
+# GeneralLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/GeneralLogParser.pm
@@ -9727,6 +9734,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 
@@ -9750,7 +9761,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ProtocolParser package 7096
+# ProtocolParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ProtocolParser.pm
@@ -9815,11 +9826,13 @@ sub parse_event {
       my $event;
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{client_packets}};
       
       map {
          $event = $self->_parse_packet($_, $args{misc});
+         $args{stats}->{events_parsed}++ if $args{stats};
       } sort { $a->{seq} <=> $b->{seq} }
       @{$session->{server_packets}};
 
@@ -9831,7 +9844,9 @@ sub parse_event {
       return;
    }
 
-   return $self->_parse_packet($packet, $args{misc});
+   my $event = $self->_parse_packet($packet, $args{misc});
+   $args{stats}->{events_parsed}++ if $args{stats};
+   return $event;
 }
 
 sub _parse_packet {
@@ -11753,7 +11768,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Pipeline package 7268
+# Pipeline package 7509
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Pipeline.pm
@@ -11835,6 +11850,8 @@ sub execute {
    my $pipeline_data = $args{pipeline_data} || {};
    $pipeline_data->{oktorun} = $oktorun;
 
+   my $stats = $args{stats};  # optional
+
    MKDEBUG && _d("Pipeline starting at", time);
    my $instrument = $self->{instrument};
    my $processes  = $self->{procs};
@@ -11861,6 +11878,10 @@ sub execute {
             if ( !$output ) {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
+               if ( $stats ) {
+                  $stats->{"pipeline_restarted_after_"
+                     .$self->{names}->[$procno]}++;
+               }
                last PIPELINE_PROCESS;
             }
             $procno++;
@@ -12679,7 +12700,12 @@ sub main {
 
             if ( $report ) {
                MKDEBUG && _d("Iteration", $args->{iter}, "stopped at",ts(time));
-               if ( $ea[0]->events_processed() ) {
+
+               # Get this before calling print_reports() because that sub
+               # resets each ea and we may need this later for stats.
+               my $n_events_aggregated = $ea[0]->events_processed();
+
+               if ( $n_events_aggregated ) {
                   print_reports(
                      eas             => \@ea,
                      tls             => \@tl,
@@ -12702,14 +12728,40 @@ sub main {
                         line_width => 74,
                      );
                      $report->set_columns(
-                        { name => 'Statistic',                    },
-                        { name => 'Value',     right_justify => 1 },
+                        { name => 'Statistic',                  },
+                        { name => 'Count',    right_justify => 1 },
+                        { name => '%/Events', right_justify => 1 },
                      );
-                     foreach my $stat ( sort keys %stats ) {
-                        $report->add_line($stat, $stats{$stat} || 0);
 
-                        # Reset stats for next iteration.
-                        $stats{$stat} = 0;
+                     # Have to add this one manually because currently
+                     # EventAggregator::aggregate() doesn't know about stats.
+                     # It's the same thing as events_processed() though.
+                     $stats{events_aggregated} = $n_events_aggregated;
+
+                     # Save value else events_read will be reset during the
+                     # foreach loop below and mess up percentage_of().
+                     my $n_events_read = $stats{events_read} || 0;
+
+                     my %stats_sort_order = (
+                        events_read       => 1,
+                        events_parsed     => 2,
+                        events_aggregated => 3,
+                     );
+                     my @stats = sort {
+                           QueryReportFormatter::pref_sort(
+                              $a, $stats_sort_order{$a},
+                              $b, $stats_sort_order{$b})
+                     } keys %stats;
+                     foreach my $stat ( @stats ) {
+                        $report->add_line(
+                           $stat,
+                           $stats{$stat} || 0,
+                           percentage_of(
+                              $stats{$stat} || 0,
+                              $n_events_read,
+                              p => 2),
+                        );
+                        $stats{$stat} = 0;  # Reset for next iteration.
                      }
                      print "\n" . $report->get_report();
                   }
@@ -13218,6 +13270,7 @@ sub main {
       $pipeline->execute(
          oktorun       => \$oktorun,
          pipeline_data => $pipeline_data,
+         stats         => \%stats,
       );
    };
    if ( $EVAL_ERROR ) {
@@ -13353,7 +13406,7 @@ sub print_reports {
          );
       }
 
-      $eas->[$i]->reset_aggregated_data();  # reset for next iteration
+      $eas->[$i]->reset_aggregated_data();  # Reset for next iteration.
 
       # Print header report only once.  So remove it from the
       # list of reports after the first groupby's reports.
@@ -15401,7 +15454,36 @@ Socket file to use for connection.
 
 =item --statistics
 
-Print statistics.
+Print statistics about internal counters.  This option is mostly for
+development and debugging.  The statistics report is printed for each
+iteration after all other reports, even if no events are processed or
+C<--no-report> is specified.  The statistics report looks like:
+
+   # No events processed.
+
+   # Statistic                                        Count  %/Events
+   # ================================================ ====== ========
+   # events_read                                      142030   100.00
+   # events_parsed                                     50430    35.51
+   # events_aggregated                                     0     0.00
+   # ignored_midstream_server_response                 18111    12.75
+   # no_tcp_data                                       91600    64.49
+   # pipeline_restarted_after_MemcachedProtocolParser 142030   100.00
+   # pipeline_restarted_after_TcpdumpParser                1     0.00
+   # unknown_client_command                                1     0.00
+   # unknown_client_data                               32318    22.75
+
+The first column is the internal counter name; the second column is counter's
+count; and the third column is the count as a percentage of C<events_read>.
+
+In this case, it shows why no events were processed/aggregated: 100% of events
+were rejected by the C<MemcachedProtocolParser>.  Of those, 35.51% were data
+packets, but of these 12.75% of ignored mid-stream server response, one was
+an unknown client command, and 22.75% were unknown client data.  The other
+64.49% were TCP control packets (probably most ACKs).
+
+Since mk-query-digest is complex, you will probably need someone familiar
+with its code to decipher the statistics report.
 
 =item --table-access
 
