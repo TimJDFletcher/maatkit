@@ -251,6 +251,10 @@ sub parse_event {
          # it's been cast into a hash, duplicated keys will be gone.
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {

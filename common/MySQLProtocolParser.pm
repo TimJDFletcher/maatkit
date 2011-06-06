@@ -453,6 +453,7 @@ sub parse_event {
       MKDEBUG && _d('Session deleted');
    }
 
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 

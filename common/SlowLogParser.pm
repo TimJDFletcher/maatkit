@@ -1,4 +1,4 @@
-# This program is copyright 2007-2010 Baron Schwartz.
+# This program is copyright 2007-2011 Baron Schwartz.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -272,6 +272,10 @@ sub parse_event {
       # it's been cast into a hash, duplicated keys will be gone.
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
