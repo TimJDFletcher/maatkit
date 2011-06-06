@@ -107,8 +107,6 @@ sub parse_event {
    # Save raw packets to dump later in case something fails.
    push @{$session->{raw_packets}}, $packet->{raw_packet};
 
-   $args{stats}->{events_parsed}++ if $args{stats};
-
    # Finally, parse the packet and maybe create an event.
    $packet->{data} = pack('H*', $packet->{data});
    my $event;
@@ -120,10 +118,12 @@ sub parse_event {
    }
    else {
       # Should not get here.
+      $args{stats}->{unknown_packet_origin}++ if $args{stats};
       die 'Packet origin unknown';
    }
 
    MKDEBUG && _d('Done with packet; event:', Dumper($event));
+   $args{stats}->{events_parsed}++ if $args{stats};
    return $event;
 }
 
