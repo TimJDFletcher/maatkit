@@ -5303,6 +5303,13 @@ sub main {
             . 'Use --resume-replicate instead.');
       }
 
+      if ( my $throttle_method = $o->get('throttle-method') ) {
+         $throttle_method = lc $throttle_method;
+         if ( !grep { $throttle_method eq $_ } qw(none slavelag) ) {
+            $o->save_error("Invalid --throttle-method: $throttle_method");
+         }
+      }
+
       if ( $o->get('check-slave-lag') && $o->get('throttle-method') eq 'none') {
          # User specified --check-slave-lag DSN and --throttle-method none.
          # They probably meant just --check-slave-lag DSN.
@@ -5393,7 +5400,7 @@ sub main {
    # #########################################################################
    my $throttle_method = $o->get('throttle-method');
    my @slaves;
-   if ( $throttle_method eq 'slavelag' ) {
+   if ( lc($throttle_method) eq 'slavelag' ) {
       if ( $o->get('check-slave-lag') ) {
          MKDEBUG && _d('Using --check-slave-lag DSN for throttle');
          # OptionParser can't auto-copy DSN vals from a cmd line DSN
