@@ -28,7 +28,7 @@ our $DISTRIB = '@DISTRIB@';
 our $SVN_REV = sprintf("%d", (q$Revision$ =~ m/(\d+)/g, 0));
 
 # ###########################################################################
-# MasterSlave package 6935
+# MasterSlave package 7525
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MasterSlave.pm
@@ -302,35 +302,35 @@ sub get_slave_status {
 
 sub get_master_status {
    my ( $self, $dbh ) = @_;
-   if ( !$self->{not_a_master}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-            ||= $dbh->prepare('SHOW MASTER STATUS');
-      MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
-      $sth->execute();
-      my ($ms) = @{$sth->fetchall_arrayref({})};
 
-      if ( $ms && %$ms ) {
-         $ms = { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
-         if ( $ms->{file} && $ms->{position} ) {
-            return $ms;
-         }
-      }
+   if ( $self->{not_a_master}->{$dbh} ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+      return;
+   }
 
-      MKDEBUG && _d('This server returns nothing for SHOW MASTER STATUS');
+   my $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
+         ||= $dbh->prepare('SHOW MASTER STATUS');
+   MKDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   $sth->execute();
+   my ($ms) = @{$sth->fetchall_arrayref({})};
+   MKDEBUG && _d(Dumper($ms));
+
+   if ( !$ms || scalar keys %$ms < 2 ) {
+      MKDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
       $self->{not_a_master}->{$dbh}++;
    }
+
+  return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
 sub wait_for_master {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_dbh slave_dbh);
+   my @required_args = qw(master_status slave_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $slave_dbh) = @args{@required_args};
+   my ($master_status, $slave_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
-   my $master_status = $args{master_status}
-                       || $self->get_master_status($master_dbh);
 
    my $result;
    my $waited;
@@ -338,8 +338,8 @@ sub wait_for_master {
       my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', "
               . "$master_status->{position}, $timeout)";
       MKDEBUG && _d($slave_dbh, $sql);
-      my $start  = time;
-      ($result)  = $slave_dbh->selectrow_array($sql);
+      my $start = time;
+      ($result) = $slave_dbh->selectrow_array($sql);
 
       $waited = time - $start;
 
@@ -381,7 +381,7 @@ sub start_slave {
 }
 
 sub catchup_to_master {
-   my ( $self, $slave, $master, $time ) = @_;
+   my ( $self, $slave, $master, $timeout ) = @_;
    $self->stop_slave($master);
    $self->stop_slave($slave);
    my $slave_status  = $self->get_slave_status($slave);
@@ -397,12 +397,12 @@ sub catchup_to_master {
       $self->start_slave($slave, $master_pos);
 
       $result = $self->wait_for_master(
-            master_dbh    => $master,
+            master_status => $master_status,
             slave_dbh     => $slave,
-            timeout       => $time,
+            timeout       => $timeout,
             master_status => $master_status
       );
-      if ( !defined $result ) {
+      if ( !defined $result->{result} ) {
          $slave_status = $self->get_slave_status($slave);
          if ( !$self->slave_is_running($slave_status) ) {
             MKDEBUG && _d('Master position:',

@@ -1403,7 +1403,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -1573,6 +1573,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -4768,7 +4772,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Pipeline package 7268
+# Pipeline package 7509
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Pipeline.pm
@@ -4850,6 +4854,8 @@ sub execute {
    my $pipeline_data = $args{pipeline_data} || {};
    $pipeline_data->{oktorun} = $oktorun;
 
+   my $stats = $args{stats};  # optional
+
    MKDEBUG && _d("Pipeline starting at", time);
    my $instrument = $self->{instrument};
    my $processes  = $self->{procs};
@@ -4876,6 +4882,10 @@ sub execute {
             if ( !$output ) {
                MKDEBUG && _d("Pipeline restarting early after",
                   $self->{names}->[$procno]);
+               if ( $stats ) {
+                  $stats->{"pipeline_restarted_after_"
+                     .$self->{names}->[$procno]}++;
+               }
                last PIPELINE_PROCESS;
             }
             $procno++;

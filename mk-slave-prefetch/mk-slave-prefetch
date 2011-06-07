@@ -1492,7 +1492,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# BinaryLogParser package 6785
+# BinaryLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/BinaryLogParser.pm
@@ -1665,6 +1665,10 @@ sub parse_event {
       if ( $found_arg ) {
          MKDEBUG && _d('Properties of event:', Dumper(\@properties));
          my $event = { @properties };
+         if ( $args{stats} ) {
+            $args{stats}->{events_read}++;
+            $args{stats}->{events_parsed}++;
+         }
          return $event;
       }
       else {

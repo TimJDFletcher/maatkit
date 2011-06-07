@@ -1481,7 +1481,7 @@ sub join_quote {
 # ###########################################################################
 
 # ###########################################################################
-# SlowLogParser package 7096
+# SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SlowLogParser.pm
@@ -1651,6 +1651,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # EVENT
 
@@ -1674,7 +1678,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# GeneralLogParser package 7096
+# GeneralLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/GeneralLogParser.pm
@@ -1808,6 +1812,10 @@ sub parse_event {
 
       MKDEBUG && _d('Properties of event:', Dumper(\@properties));
       my $event = { @properties };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
       return $event;
    } # LINE
 
@@ -4023,7 +4031,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# SQLParser package 7433
+# SQLParser package 7497
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/SQLParser.pm
@@ -4070,6 +4078,7 @@ my $column_ident = qr/(?:
 sub new {
    my ( $class, %args ) = @_;
    my $self = {
+      %args,
    };
    return bless $self, $class;
 }
@@ -4871,6 +4880,22 @@ sub parse_identifier {
    else {
       die "Invalid number of parts in $type reference: $ident";
    }
+   
+   if ( $self->{SchemaQualifier} ) {
+      if ( $type eq 'column' && !$ident_struct{tbl} ) {
+         my $qcol = $self->{SchemaQualifier}->qualify_column(
+            column => $ident_struct{col},
+         );
+         $ident_struct{db}  = $qcol->{db}  if $qcol->{db};
+         $ident_struct{tbl} = $qcol->{tbl} if $qcol->{tbl};
+      }
+      elsif ( $type eq 'table' && !$ident_struct{db} ) {
+         my $db = $self->{SchemaQualifier}->get_database_for_table(
+            table => $ident_struct{tbl},
+         );
+         $ident_struct{db} = $db if $db;
+      }
+   }
 
    MKDEBUG && _d($type, "identifier struct:", Dumper(\%ident_struct));
    return \%ident_struct;
@@ -4904,6 +4929,12 @@ sub is_identifier {
    return 1 if $thing =~ m/^\s*$column_ident\s*$/;
 
    return 0;
+}
+
+sub set_SchemaQualifier {
+   my ( $self, $sq ) = @_;
+   $self->{SchemaQualifier} = $sq;
+   return;
 }
 
 sub _d {
