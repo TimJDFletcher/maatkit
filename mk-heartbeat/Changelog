@@ -1,5 +1,7 @@
 Changelog for mk-heartbeat:
 
+2011-06-08: version 1.0.23
+
    * Removed --quiet option.
    * Added --master-server-id option (issue 1292).
    * Added --print-master-server-id option (issue 1292).

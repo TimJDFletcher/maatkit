@@ -1,5 +1,7 @@
 Changelog for mk-tcp-model:
 
+2011-06-08: version 1.0.1
+
    * Added --start-end option.
 
 2011-05-05: version 1.0.0
