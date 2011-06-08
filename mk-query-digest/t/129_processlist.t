@@ -31,7 +31,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 3;
+   plan tests => 2;
 }
 
 my @args = qw(-F /tmp/12345/my.sandbox.cnf --processlist h=127.1 --report-format query_report);
@@ -43,7 +43,7 @@ system("/tmp/12345/use -e 'select sleep(5)' >/dev/null 2>&1 &");
 sleep 1;
 
 my $rows = $dbh->selectall_arrayref("show processlist");
-my $exec = grep { ($_->[6] || '') eq 'executing' } @$rows;
+my $exec = grep { ($_->[6] || '') =~ m/executing|sleep/ } @$rows;
 is(
    $exec,
    3,
