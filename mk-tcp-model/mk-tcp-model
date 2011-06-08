@@ -2265,26 +2265,6 @@ type: Array
 Read this comma-separated list of config files; if specified, this must be the
 first option on the command line.
 
-=item --start-end
-
-type: Array; default: ts,end
-
-Define how the arrival and completion timestamps of a query, and thus its
-response time (elapsed time) are computed.  Recall that there may be multiple
-inbound and outbound packets per request and response, and refer to the
-following ASCII diagram.  Suppose that a client sends a series of three inbound
-(I) packets to the server, whch computes the result and then sends two outbound
-(O) packets back:
-
-  I I    I ..................... O    O
-  |<---->|<---response time----->|<-->|
-  ts0    ts                      end  end1
-
-By default, the query is considered to arrive at time ts, and complete at time
-end.  However, this might not be what you want.  Perhaps you do not want to
-consider the query to have completed until time end1.  You can accomplish this
-by setting this option to C<ts,end1>.
-
 =item --help
 
 Show help and exit.
@@ -2310,6 +2290,26 @@ type: float
 
 The size of the aggregation interval in seconds when L<"--type"> is "requests"
 (default 1).  Fractional values are permitted.
+
+=item --start-end
+
+type: Array; default: ts,end
+
+Define how the arrival and completion timestamps of a query, and thus its
+response time (elapsed time) are computed.  Recall that there may be multiple
+inbound and outbound packets per request and response, and refer to the
+following ASCII diagram.  Suppose that a client sends a series of three inbound
+(I) packets to the server, whch computes the result and then sends two outbound
+(O) packets back:
+
+  I I    I ..................... O    O
+  |<---->|<---response time----->|<-->|
+  ts0    ts                      end  end1
+
+By default, the query is considered to arrive at time ts, and complete at time
+end.  However, this might not be what you want.  Perhaps you do not want to
+consider the query to have completed until time end1.  You can accomplish this
+by setting this option to C<ts,end1>.
 
 =item --type
 
