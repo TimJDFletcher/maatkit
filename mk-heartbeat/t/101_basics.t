@@ -73,7 +73,7 @@ $output = `$ps_grep_cmd`;
 like($output, qr/$cmd/, 'It is running');
 
 ok(-f $pid_file, 'PID file created');
-my ($pid) = $output =~ /^\s+(\d+)\s+/;
+my ($pid) = $output =~ /^\s*(\d+)\s+/;
 $output = `cat $pid_file`;
 is($output, $pid, 'PID file has correct PID');
 
