@@ -3851,14 +3851,13 @@ Start daemonized process to update test.heartbeat table on master:
 
 Monitor replication lag on slave:
 
-  mk-heartbeat -D test --monitor -h slave-server --master-server-id 1
+  mk-heartbeat -D test --monitor -h slave-server
 
-  mk-heartbeat -D test --monitor -h slave-server --master-server-id 1 \
-    --dbi-driver Pg
+  mk-heartbeat -D test --monitor -h slave-server --dbi-driver Pg
 
 Check slave lag once and exit (using optional DSN to specify slave host):
 
-  mk-heartbeat -D test --check h=slave-server --master-server-id 1
+  mk-heartbeat -D test --check h=slave-server
 
 =head1 RISKS
 
@@ -3940,10 +3939,10 @@ can be ran on the slaves as well as the master.  The default heartbeat
 table (see L<"--create-table">) is keyed on the C<server_id> column, so
 each server will update the row where C<server_id=@@server_id>.
 
-For L<"--monitor"> and L<"--check"> it is therefore necessary to specify
-the L<"--master-server-id"> option so that the tool can select the heartbeat 
-corresponding to the chosen server.  If you don't specify this, the tool uses
-the heartbeat corresponding to the server's immediate master.
+For L<"--monitor"> and L<"--check">, if L<"--master-server-id"> is not
+specified, the tool tries to discover and use the slave's immediate master.
+If this fails, or if you want monitor lag from another master, then you can
+specify the L<"--master-server-id"> to use.
 
 For example, if the replication hierarchy is "master -> slave1 -> slave2"
 with corresponding server IDs 1, 2 and 3, you can:
@@ -4159,7 +4158,7 @@ type: string
 
 Calculate delay from this master server ID for L<"--monitor"> or L<"--check">.
 If not given, mk-heartbeat attempts to connect to the server's master and
-determine its server_id.
+determine its server id.
 
 =item --monitor
 
