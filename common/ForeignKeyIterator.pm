@@ -42,6 +42,9 @@ $Data::Dumper::Quotekeys = 0;
 #   TableParser    - <TableParser> object.
 #   Quoter         - <Quoter> object.
 #
+# Optional Arguments:
+#   reverse - Iterate in reverse, from referenced tables to tbl.
+#
 # Returns:
 #   ForeignKeyIterator object
 sub new {
@@ -51,6 +54,7 @@ sub new {
       die "I need a $arg argument" unless $args{$arg};
    }
 
+   MKDEBUG && _d('Reverse iteration:', $args{reverse} ? 'yes' : 'no');
    my $self = {
       %args,
    };
@@ -62,92 +66,114 @@ sub new {
 #   Return the next schema object or undef when no more schema objects.
 #
 # Returns:
-#   Hash of schema object with at least a db and tbl keys, like
+#   Hashref of schema object with at least a db and tbl keys, like
 #   (start code)
-#   (
+#   {
 #      db   => 'test',
 #      tbl  => 'a',
 #      ddl  => "CREATE TABLE `a` (
 #                 `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
 #                 `c2` varchar(45) NOT NULL
 #               );",
-#   )
+#      fks  => hasref from <TableParser::get_fks()>,
+#   }
 #   (end code)
 #   The ddl is suitable for <TableParser::parse()>.
 sub next_schema_object {
    my ( $self ) = @_;
 
-   if ( !$self->{schema_objs} ) {
-      $self->_walk_foreign_keys();
+   if ( !exists $self->{fk_refs} ) {
+      $self->_set_fk_refs();
    }
 
-   #my %schema_object = shift @{$self->{schema_objs}};
-   #MKDEBUG && _d('Next schema object:', Dumper(\%schema_object));
-   #return %schema_object;
+   my $schema_obj;
+   my $fk_ref = $self->{reverse} ? shift @{$self->{fk_refs}}
+              :                    pop   @{$self->{fk_refs}};
+   if ( $fk_ref ) {
+      my $fk_ref_schema = $self->{schema}->{$fk_ref->{db}}->{$fk_ref->{tbl}};
+      $schema_obj  = {
+         db  => $fk_ref->{db},
+         tbl => $fk_ref->{tbl},
+         ddl => $fk_ref_schema->{ddl},
+         fks => $fk_ref_schema->{fks},
+      };
+   }
+   MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
+   return $schema_obj;
 }
 
-sub _walk_foreign_keys {
+sub _set_fk_refs {
    my ( $self ) = @_;
+   $self->_set_schema();
 
-   my $schema    = $self->_get_schema();
-   my @fk_struct = $self->_recurse_schema($schema);
-   print Dumper(\@fk_struct);
+   my @fk_refs = $self->_recurse_fk_references($self->{schema});
+   MKDEBUG && _d('Foreign key table order:', Dumper(\@fk_refs));
+   $self->{fk_refs} = \@fk_refs;
 
    return;
 }
 
-sub _get_schema {
+sub _set_schema {
    my ( $self ) = @_;
    my $schema_itr = $self->{SchemaIterator};
    my $tp         = $self->{TableParser};
    my $q          = $self->{Quoter};
+   MKDEBUG && _d('Setting schema from SchemaIterator');
 
    my %schema;
    SCHEMA_OBJECT:
-   while ( my %obj = $schema_itr->next_schema_object() ) {
-      if ( !$obj{ddl} ) {
-         warn "No CREATE TABLE for $obj{db}.$obj{tbl}";
+   while ( my $obj = $schema_itr->next_schema_object() ) {
+      my ($db, $tbl) = @{$obj}{qw(db tbl)};
+
+      if ( !$obj->{ddl} ) {
+         warn "No CREATE TABLE for $db.$tbl";
          next SCHEMA_OBJECT;
       }
-      my $this_obj_refs = $schema{$obj{db}}->{$obj{tbl}}->{references} = [];
-      my $fks           = $tp->get_fks($obj{ddl}, { database => $obj{db} });
-      foreach my $fk ( values %$fks ) {
-         my ($db, $tbl) = $q->split_unquote($fk->{parent_tbl});
-         push @{$this_obj_refs}, [$db, $tbl];
-         push @{$schema{$db}->{$tbl}->{referenced_by}}, [$obj{db}, $obj{tbl}];
+      $schema{$db}->{$tbl}->{ddl} = $obj->{ddl};
+
+      my $fks = $tp->get_fks($obj->{ddl}, { database => $db });
+      if ( $fks && scalar values %$fks ) {
+         $schema{$db}->{$tbl}->{fks} = $fks;
+         foreach my $fk ( values %$fks ) {
+            my ($fk_db, $fk_tbl) = $q->split_unquote($fk->{parent_tbl});
+            push @{$schema{$db}->{$tbl}->{references}}, [$fk_db, $fk_tbl];
+            push @{$schema{$fk_db}->{$fk_tbl}->{referenced_by}}, [$db, $tbl];
+         }
       }
    }
 
-   return \%schema;
+   $self->{schema} = \%schema;
+   return;
 }
 
-sub _recurse_schema {
-   my ( $self, $schema, $db, $tbl, $seen, $refno ) = @_;
+sub _recurse_fk_references {
+   my ( $self, $schema, $db, $tbl, $seen ) = @_;
 
    if ( !$db || !$tbl || !$seen ) {
       $db    = $self->{db};
       $tbl   = $self->{tbl};
       $seen  = {};
-      $refno = 1;  # for debugging
    }
 
    if ( $seen && $seen->{"$db$tbl"}++ ) {
       MKDEBUG && _d('Circular reference, already seen', $db, $tbl);
       return;
    }
-   MKDEBUG && _d($refno, 'Recursing from', $db, $tbl);
+   MKDEBUG && _d('Recursing from', $db, $tbl);
 
-   my @schema_objs;
-   if ( scalar @{$schema->{$db}->{$tbl}->{references}} ) {
+   my @fk_refs;
+   if ( $schema->{$db}->{$tbl}->{references} ) {
       foreach my $refed_obj ( @{$schema->{$db}->{$tbl}->{references}} ) {
          MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
-         push @schema_objs, $self->_recurse_schema($schema, @$refed_obj, $seen, $refno++);
+         push @fk_refs,
+            $self->_recurse_fk_references($schema, @$refed_obj, $seen);
       }
    }
 
    MKDEBUG && _d('No more tables referenced by', $db, $tbl);
-   push @schema_objs, [$db, $tbl];
-   return @schema_objs;
+   push @fk_refs, { db => $db, tbl => $tbl };
+
+   return @fk_refs;
 }
 
 sub _d {

@@ -170,31 +170,31 @@ sub _make_filters {
 #   a dbh, then you must create the obj with a MySQLDump obj to get a ddl.
 #
 # Returns:
-#   Hash of schema object with at least a db and tbl keys, like
+#   Hashref of schema object with at least a db and tbl keys, like
 #   (start code)
-#   (
+#   {
 #      db   => 'test',
 #      tbl  => 'a',
 #      ddl  => "CREATE TABLE `a` (
 #                 `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
 #                 `c2` varchar(45) NOT NULL
 #               );",
-#   )
+#   }
 #   (end code)
 #   The ddl is suitable for <TableParser::parse()>.
 sub next_schema_object {
    my ( $self ) = @_;
 
-   my %schema_object;
+   my $schema_object;
    if ( $self->{file_itr} ) {
-      %schema_object = $self->_iterate_files();
+      $schema_object = $self->_iterate_files();
    }
    else { # dbh
-      %schema_object = $self->_iterate_dbh();
+      $schema_object = $self->_iterate_dbh();
    }
 
-   MKDEBUG && _d('Next schema object:', Dumper(\%schema_object));
-   return %schema_object;
+   MKDEBUG && _d('Next schema object:', Dumper($schema_object));
+   return $schema_object;
 }
 
 sub _iterate_files {
@@ -255,11 +255,11 @@ sub _iterate_files {
             my ($engine) = $ddl =~ m/\).*?(?:ENGINE|TYPE)=(\w+)/;   
 
             if ( !$engine || $self->engine_is_allowed($engine) ) {
-               return (
+               return {
                   db  => $self->{db},
                   tbl => $tbl,
                   ddl => $ddl,
-               );
+               };
             }
          }
       }
@@ -330,11 +330,11 @@ sub _iterate_dbh {
             $ddl = $du->get_create_table($dbh, $q, $self->{db}, $tbl)->[1];
          }
 
-         return (
+         return {
             db  => $self->{db},
             tbl => $tbl,
             ddl => $ddl,
-         );
+         };
       }
    }
 

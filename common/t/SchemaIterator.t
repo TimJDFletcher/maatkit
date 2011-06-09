@@ -73,13 +73,13 @@ sub test_so {
    my $result_file = -f "$trunk/$args{result}";
 
    my $res = "";
-   while ( my %obj = $si->next_schema_object() ) {
+   while ( my $obj = $si->next_schema_object() ) {
       if ( $result_file || $args{ddl} ) {
-         $res .= "$obj{db}.$obj{tbl}\n";
-         $res .= "$obj{ddl}\n\n" if $args{ddl} || $du;
+         $res .= "$obj->{db}.$obj->{tbl}\n";
+         $res .= "$obj->{ddl}\n\n" if $args{ddl} || $du;
       }
       else {
-         $res .= "$obj{db}.$obj{tbl} ";
+         $res .= "$obj->{db}.$obj->{tbl} ";
       }
    }
 
