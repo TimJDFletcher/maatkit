@@ -9,14 +9,19 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 15;
+use Test::More tests => 16;
+
+use Data::Dumper;
+$Data::Dumper::Indent    = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Quotekeys = 0;
 
 use MaatkitTest;
 use Quoter;
 use TableParser;
 use FileIterator;
 use SchemaIterator;
-use SchemaQualifier;
+use Schema;
 use OptionParser;
 use DSNParser;
 
@@ -32,16 +37,16 @@ $o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
 $o->get_opts();
 
 my $file_itr = $fi->get_file_itr("$in/dump001.txt");
-my $sq       = new SchemaQualifier();
+my $sq       = new Schema();
 my $si       = new SchemaIterator (
-   file_itr       => $file_itr,
-   OptionParser   => $o,
-   Quoter         => $q,
-   TableParser    => $tp,
-   SchemaQualifier=> $sq,
+   file_itr     => $file_itr,
+   OptionParser => $o,
+   Quoter       => $q,
+   TableParser  => $tp,
+   Schema       => $sq,
 );
 
-# Init the schema qualifier.
+# Init the schema (SchemaIterator calls Schema::add_schema_object()).
 1 while(defined $si->next_schema_object());
 
 ok(
@@ -55,100 +60,134 @@ ok(
    "Duplicate tables in dump001.txt"
 );
 
-is_deeply(
-   $sq->qualify_column('c3'),
-   { db  => 'test', tbl => 'b', col => 'c3', },
-   "Qualify column c3"
-);
-
-is_deeply(
-   $sq->qualify_column('b.c3'),
-   { db  => 'test', tbl => 'b', col => 'c3', },
-   "Qualify column b.c3"
-);
-
-is_deeply(
-   $sq->qualify_column('test.b.c3'),
-   { db  => 'test', tbl => 'b', col => 'c3', },
-   "Qualify column test.b.c3"
-);
-
-is_deeply(
-   $sq->qualify_column('c1'),
-   { db  => undef, tbl => undef, col => 'c1', },
-   "Cannot qualify duplicate column name"
-);
-
-is_deeply(
-   $sq->qualify_column('xyz'),
-   { db  => undef, tbl => undef, col => 'xyz', },
-   "Cannot qualify nonexistent column name"
-);
-
-is_deeply(
-   $sq->qualify_column('a.c1'),
-   { db  => undef, tbl => 'a', col => 'c1', },
-   "Cannot database-qualify duplicate table name"
-);
 
 # ############################################################################
-# Qualify with duplicates.
+# Test find columns in the schema.
 # ############################################################################
-$file_itr = $fi->get_file_itr("$in/dump001.txt");
-$sq       = new SchemaQualifier(allow_duplicate_columns => 1);
-$si       = new SchemaIterator (
-   file_itr        => $file_itr,
-   OptionParser    => $o,
-   Quoter          => $q,
-   TableParser     => $tp,
-   SchemaQualifier => $sq,
+
+sub test_find_col {
+   my ($got, $expect, $test_name) = @_;
+
+   my @got_tbls;
+   foreach my $tbl ( @$got ) {
+      push @got_tbls, [$tbl->{db}, $tbl->{tbl}];
+   }
+
+   is_deeply(
+      \@got_tbls,
+      $expect,
+      $test_name,
+   ) or print Dumper($got);
+}
+
+# First by column name, what would be parsed from a query.
+
+test_find_col(
+   $sq->find_column(col_name => 'c3'),
+   [['test','b']],
+   "Find column c3"
 );
 
-# Init the schema qualifier.
-1 while(defined $si->next_schema_object());
-
-ok(
-   !$sq->is_duplicate_column('c1'),
-   "No duplicate columns when allowed"
+test_find_col(
+   $sq->find_column(col_name => 'b.c3'),
+   [['test','b']],
+   "Find column b.c3"
 );
 
-ok(
-   $sq->is_duplicate_table('a'),
-   "Duplicate tables with duplicate columns allowed",
+test_find_col(
+   $sq->find_column(col_name => 'test.b.c3'),
+   [['test','b']],
+   "Find column test.b.c3"
 );
 
-is_deeply(
-   $sq->qualify_column('c3'),
-   [ { db  => 'test', tbl => 'b', col => 'c3', } ],
-   "Qualify column c3 with duplicate columns allowed"
-);
-
-is_deeply(
-   $sq->qualify_column('b.c3'),
-   [ { db  => 'test', tbl => 'b', col => 'c3', } ],
-   "Qualify column b.c3 with duplicate columns allowed"
-);
-
-is_deeply(
-   $sq->qualify_column('test.b.c3'),
-   [ { db  => 'test', tbl => 'b', col => 'c3', } ],
-   "Qualify column test.b.c3 with duplicate columns allowed"
-);
-
-is_deeply(
-   $sq->qualify_column('c1'),
+test_find_col(
+   $sq->find_column(col_name => 'c1'),
    [
-      { db  => 'test',  tbl => 'a', col => 'c1', },
-      { db  => 'test',  tbl => 'b', col => 'c1', },
-      { db  => 'test2', tbl => 'a', col => 'c1', },
+      ['test',  'a'],
+      ['test',  'b'],
+      ['test2', 'a'],
    ],
-   "Qualify duplicate column c1"
+   "Find duplicate column c1"
+);
+
+test_find_col(
+   $sq->find_column(col_name => 'a.c1'),
+   [
+      ['test',  'a'],
+      ['test2', 'a'],
+   ],
+   "Find duplicate table.column a.c1"
+);
+
+test_find_col(
+   $sq->find_column(col_name => 'xyz'),
+   [],
+   "Cannot find nonexistent column name"
+);
+
+# Then by a tbl struct, what's used by Schema.
+
+test_find_col(
+   $sq->find_column(col => 'c3'),
+   [['test','b']],
+   "Find column c3 (struct)"
+);
+
+test_find_col(
+   $sq->find_column(tbl => 'b', col => 'c3'),
+   [['test','b']],
+   "Find column b.c3 (struct)"
+);
+
+test_find_col(
+   $sq->find_column(db => 'test', tbl => 'b', col => 'c3'),
+   [['test','b']],
+   "Find column test.b.c3 (struct)"
+);
+
+test_find_col(
+   $sq->find_column(col => 'c1'),
+   [
+      ['test',  'a'],
+      ['test',  'b'],
+      ['test2', 'a'],
+   ],
+   "Find duplicate column c1 (struct)"
+);
+
+test_find_col(
+   $sq->find_column(tbl => 'a', col => 'c1'),
+   [
+      ['test',  'a'],
+      ['test2', 'a'],
+   ],
+   "Find duplicate table.column a.c1 (struct)"
+);
+
+test_find_col(
+   $sq->find_column(col => 'xyz'),
+   [],
+   "Cannot find nonexistent column name (struct)"
 );
 
 # ############################################################################
-# Set schema with pre-created schema struct.
+# Test ignore.
 # ############################################################################
-
+test_find_col(
+   $sq->find_column(
+      col    => 'c1',
+      ignore => [
+         { db => 'test',  tbl => 'a' },
+         { db => 'test2', tbl => 'a' },
+      ],
+   ),
+   [
+      #['test',  'a'],  # IGNORED
+      ['test',  'b'],
+      #['test2', 'a'],  # IGNORED
+   ],
+   "Ignore tables"
+);
 
 # #############################################################################
 # Done.

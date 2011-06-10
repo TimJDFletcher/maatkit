@@ -126,7 +126,7 @@ sub test_so {
 }
 
 SKIP: {
-   skip "Cannot connect to sandbox master", 21 unless $dbh;
+   skip "Cannot connect to sandbox master", 22 unless $dbh;
    $sb->wipe_clean($dbh);
 
    # ########################################################################

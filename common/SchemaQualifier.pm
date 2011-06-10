@@ -15,9 +15,9 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA.
 # ###########################################################################
-# SchemaQualifier package $Revision$
+# Schema package $Revision$
 # ###########################################################################
-package SchemaQualifier;
+package Schema;
 
 { # package scope
 use strict;
@@ -36,12 +36,8 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 # Parameters:
 #   %args - Arguments
 #
-# Optional Arguments:
-#   allow_duplicate_columns - Allow duplicate column names (default false)
-#   allow_duplicate_tables  - Allow duplicate table names (default false)
-#
 # Returns:
-#  SchemaQualifier object
+#  Schema object
 sub new {
    my ( $class, %args ) = @_;
    my @required_args = qw();
@@ -56,6 +52,15 @@ sub new {
       tables  => {},
    };
    return bless $self, $class;
+}
+
+sub get_table {
+   my ( $self, $db_name, $tbl_name ) = @_;
+   if ( exists $self->{schema}->{$db_name}
+        && exists $self->{schema}->{$db_name}->{$tbl_name} ) {
+      return $self->{schema}->{$db_name}->{$tbl_name};
+   }
+   return;
 }
 
 sub is_duplicate_column {
@@ -76,123 +81,89 @@ sub is_duplicate_table {
 #
 # Parameters:
 #   $schema_object - Schema object hashref.
-#
-# Required Arguments:
-#   schema_object - Schema object hashref.
 sub add_schema_object {
    my ( $self, $schema_object ) = @_;
-   die "I need an obj argument" unless $schema_object;
+   die "I need a schema_object argument" unless $schema_object;
 
    my ($db, $tbl) = @{$schema_object}{qw(db tbl)};
+   if ( !$db || !$tbl ) {
+      warn "No database or table for schema object";
+      return;
+   }
+
    my $tbl_struct = $schema_object->{tbl_struct};
    if ( !$tbl_struct ) {
       warn "No table structure for $db.$tbl";
-      next SCHEMA_OBJECT;
+      return;
    }
-   $self->{schema}->{$db}->{$tbl} = $tbl_struct->{is_col};
 
-   if ( !$self->{allow_duplicate_columns} ) {
-      map { $self->{columns}->{$_}++ } @{$tbl_struct->{cols}};
-   }
-   if ( !$self->{allow_duplicate_tables} ) {
-      $self->{tables}->{$tbl_struct->{name}}++;
-   }
+   # Add/save this schema object.
+   $self->{schema}->{$db}->{$tbl} = $schema_object;
+
+   # Get duplicate column and table names.
+   map { $self->{columns}->{$_}++ } @{$tbl_struct->{cols}};
+   $self->{tables}->{$tbl_struct->{name}}++;
 
    return;
 }
 
-sub qualify_column {
-   my ( $self, $column ) = @_;
-   die "I need a column argument" unless $column;
-   MKDEBUG && _d('Qualifying', $column);
+sub find_column {
+   my ( $self, %args ) = @_;
+   my $ignore = $args{ignore};
+   my $schema = $self->{schema};
 
-   my ($col, $tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $column;
-   MKDEBUG && _d('Column', $column, 'has db', $db, 'tbl', $tbl, 'col', $col);
-
-   my $original_col = {db => $db, tbl => $tbl, col => $col};
-   my @qcols;
-   if ( !$tbl ) {
-      if ( $self->is_duplicate_column($col) ) {
-         MKDEBUG && _d('Column name is duplicate, cannot qualify it');
-      }
-      else {
-         foreach my $tbl ( $self->_get_tables_for_column($col) ) {
-            push @qcols, {
-               db  => $tbl->[0],
-               tbl => $tbl->[1],
-               col => $col,
-            };
-         }
-         if ( !@qcols ) {
-            MKDEBUG && _d('Column', $col, 'does not exist');
-         }
-      }
-   }
-   elsif ( !$db ) {
-      if ( $self->is_duplicate_table($tbl) ) {
-         MKDEBUG && _d('Table name is duplicate, cannot qualify it');
-      }
-      else {
-         foreach my $db ( $self->_get_database_for_table($tbl) ) {
-            push @qcols, {
-               db  => $db,
-               tbl => $tbl,
-               col => $col,
-            };
-         }
-         if ( !@qcols ) {
-            MKDEBUG && _d('Table', $tbl, 'does not exist');
-         }
-      }
+   my ($col, $tbl, $db);
+   if ( my $col_name = $args{col_name} ) {
+      ($col, $tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $col_name;
+      MKDEBUG && _d('Column', $col_name, 'has db', $db, 'tbl', $tbl,
+         'col', $col);
    }
    else {
-      MKDEBUG && _d('Column is already database-table qualified');
+      ($col, $tbl, $db) = @args{qw(col tbl db)};
    }
 
-   # If @qcols is empty, then we failed to qualify the column.
-   # Return the original, whatever was given to us.
-   push @qcols, $original_col unless @qcols;
+   if ( !$col ) {
+      MKDEBUG && _d('No column specified or parsed');
+      return;
+   }
+   MKDEBUG && _d('Finding column', $col, 'in', $db, $tbl);
 
-   # If duplicate columns are allowed, then return an arryref.  The caller
-   # should expect this since the column may be in more than one table.
-   # Else, there should only be one qualified column in @qcols, so return it.
-   return $self->{allow_duplicate_columns} ? \@qcols : shift @qcols;
-}
+   if ( $db && !$schema->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'does not exist');
+      return;
+   }
 
-sub _get_tables_for_column {
-   my ( $self, $col ) = @_;
-   die "I need a col argument" unless $col;
-   MKDEBUG && _d('Getting tables for column', $col);
-   
-   my $schema = $self->{schema};
+   if ( $db && $tbl && !$schema->{$db}->{$tbl} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not exist in database', $db);
+      return;
+   }
+
    my @tbls;
-   foreach my $db ( keys %{$schema} ) {
-      foreach my $tbl ( keys %{$schema->{$db}} ) {
-         if ( $schema->{$db}->{$tbl}->{$col} ) {
-            MKDEBUG && _d('Column is in database', $db, 'table', $tbl);
-            push @tbls, [$db, $tbl];
+   my @search_dbs = $db ? ($db) : keys %$schema;
+   DATABASE:
+   foreach my $search_db ( @search_dbs ) {
+      my @search_tbls = $tbl ? ($tbl) : keys %{$schema->{$search_db}};
+
+      TABLE:
+      foreach my $search_tbl ( @search_tbls ) {
+         next DATABASE unless exists $schema->{$search_db}->{$search_tbl};
+
+         if ( $ignore
+              && grep { $_->{db} eq $search_db && $_->{tbl} eq $search_tbl }
+                 @$ignore ) {
+            MKDEBUG && _d('Ignoring', $search_db, $search_tbl, $col);
+            next TABLE;
+         }
+
+         my $tbl = $schema->{$search_db}->{$search_tbl};
+         if ( $tbl->{tbl_struct}->{is_col}->{$col} ) {
+            MKDEBUG && _d('Column', $col, 'exists in', $tbl->{db}, $tbl->{tbl});
+            push @tbls, $tbl;
          }
       }
    }
 
-   return @tbls;
-}
-
-sub _get_database_for_table {
-   my ( $self, $tbl ) = @_;
-   die "I need a tbl argument" unless $tbl;
-   MKDEBUG && _d('Getting databases for table', $tbl);
-   
-   my $schema = $self->{schema};
-   my @dbs;
-   foreach my $db ( keys %{$schema} ) {
-     if ( $schema->{$db}->{$tbl} ) {
-       MKDEBUG && _d('Table is in database', $db);
-       push @dbs, $db;
-     }
-   }
-
-   return @dbs;
+   return \@tbls;
 }
 
 sub _d {
@@ -207,5 +178,5 @@ sub _d {
 1;
 
 # ###########################################################################
-# End SchemaQualifier package
+# End Schema package
 # ###########################################################################

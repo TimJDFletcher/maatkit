@@ -38,7 +38,7 @@ $Data::Dumper::Quotekeys = 0;
 # Required Arguments:
 #   db             - Database of tbl.
 #   tbl            - Table to iterate from to its referenced tables.
-#   SchemaIterator - <SchemaIterator> object.
+#   SchemaIterator - <SchemaIterator> object created with keep_ddl=>true.
 #   TableParser    - <TableParser> object.
 #   Quoter         - <Quoter> object.
 #

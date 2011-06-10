@@ -55,11 +55,10 @@ my $tbl_name     = qr{
 #   Quoter       - <Quoter> object.
 #
 # Optional Arguments:
-#   SchemaQualifier - <SchemaQualifier> object to initialize.
-#   MySQLDump       - <MySQLDump> object to get CREATE TABLE when iterating dbh.
-#   TableParser     - <TableParser> object to parse CREATE TABLE and return
-#                     tbl_struct.
-#   keep_ddl        - Keep CREATE TABLE (default false)
+#   Schema      - <Schema> object to initialize while iterating.
+#   MySQLDump   - <MySQLDump> object to get CREATE TABLE when iterating dbh.
+#   TableParser - <TableParser> object to parse CREATE TABLE for tbl_struct.
+#   keep_ddl    - Keep CREATE TABLE (default false)
 #
 # Returns:
 #   SchemaIterator object
@@ -205,8 +204,8 @@ sub next_schema_object {
 
       delete $schema_obj->{ddl} unless $self->{keep_ddl};
 
-      if ( my $schema_qualifer = $self->{SchemaQualifier} ) {
-         $schema_qualifer->add_schema_object($schema_obj);
+      if ( my $schema = $self->{Schema} ) {
+         $schema->add_schema_object($schema_obj);
       }
    }
 
