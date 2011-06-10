@@ -71,14 +71,9 @@ sub new {
 #   {
 #      db   => 'test',
 #      tbl  => 'a',
-#      ddl  => "CREATE TABLE `a` (
-#                 `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
-#                 `c2` varchar(45) NOT NULL
-#               );",
 #      fks  => hasref from <TableParser::get_fks()>,
 #   }
 #   (end code)
-#   The ddl is suitable for <TableParser::parse()>.
 sub next_schema_object {
    my ( $self ) = @_;
 
@@ -94,7 +89,6 @@ sub next_schema_object {
       $schema_obj  = {
          db  => $fk_ref->{db},
          tbl => $fk_ref->{tbl},
-         ddl => $fk_ref_schema->{ddl},
          fks => $fk_ref_schema->{fks},
       };
    }
@@ -126,10 +120,26 @@ sub _set_schema {
       my ($db, $tbl) = @{$obj}{qw(db tbl)};
 
       if ( !$obj->{ddl} ) {
+         # If the SchemaIterator obj was created with a dbh, this probably
+         # means that it was not also created with a MySQLDump obj.
          warn "No CREATE TABLE for $db.$tbl";
          next SCHEMA_OBJECT;
       }
-      $schema{$db}->{$tbl}->{ddl} = $obj->{ddl};
+
+      if ( !$obj->{tbl_struct} ) {
+         # This probably means that the SchemaIterator obj wasn't created
+         # with a TableParser obj.
+         warn "No table structure for $db.$tbl";
+         next SCHEMA_OBJECT;
+      }
+
+      # Create a hashref for this schema object unless one already exists.
+      # One may already exist because referenced_by created it.  We don't
+      # need to save the ddl; it's just used for get_fks() and then we save
+      # the fks struct.
+      $schema{$db}->{$tbl} ||= {
+         tbl_struct => $obj->{tbl_struct},
+      };
 
       my $fks = $tp->get_fks($obj->{ddl}, { database => $db });
       if ( $fks && scalar values %$fks ) {

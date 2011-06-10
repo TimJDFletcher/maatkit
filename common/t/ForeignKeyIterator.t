@@ -51,6 +51,8 @@ sub test_fki {
       file_itr     => $file_itr,
       OptionParser => $o,
       Quoter       => $q,
+      TableParser  => $tp,
+      keep_ddl     => 1,
    );
 
    my $fki = new ForeignKeyIterator(
@@ -64,7 +66,6 @@ sub test_fki {
 
    my @got;
    while ( my $obj = $fki->next_schema_object() ) {
-      delete $obj->{ddl} unless $args{ddl};
       delete $obj->{fks} unless $args{fks};
       push @got, $obj;
    }
@@ -83,41 +84,18 @@ test_fki(
    files     => ["$in/fktbls001.sql"],
    db        => 'test',
    tbl       => 'address',
-   ddl       => 1,
    result    => [
       {
          db  => 'test',
          tbl => 'address',
-         ddl => 'CREATE TABLE `address` (
-  `address_id` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
-  `address` varchar(50) NOT NULL,
-  `city_id` smallint(5) unsigned NOT NULL,
-  `postal_code` varchar(10) DEFAULT NULL,
-  PRIMARY KEY (`address_id`),
-  KEY `idx_fk_city_id` (`city_id`),
-  CONSTRAINT `fk_address_city` FOREIGN KEY (`city_id`) REFERENCES `city` (`city_id`) ON UPDATE CASCADE
-) ENGINE=InnoDB;',
       },
       {
          db  => 'test',
          tbl => 'city',
-         ddl => 'CREATE TABLE `city` (
-  `city_id` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
-  `city` varchar(50) NOT NULL,
-  `country_id` smallint(5) unsigned NOT NULL,
-  PRIMARY KEY (`city_id`),
-  KEY `idx_fk_country_id` (`country_id`),
-  CONSTRAINT `fk_city_country` FOREIGN KEY (`country_id`) REFERENCES `country` (`country_id`) ON UPDATE CASCADE
-) ENGINE=InnoDB;',
       },
       {
          db  => 'test',
          tbl => 'country',
-         ddl => 'CREATE TABLE `country` (
-  `country_id` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
-  `country` varchar(50) NOT NULL,
-  PRIMARY KEY (`country_id`)
-) ENGINE=InnoDB;',
       },
    ],
 );
@@ -127,23 +105,11 @@ test_fki(
    files     => ["$in/fktbls002.sql"],
    db        => 'test',
    tbl       => 'data',
-   ddl       => 1,
    fks       => 1,
    result    => [
       {
          db  => 'test',
          tbl => 'data',
-         ddl => 'CREATE TABLE `data` (
-  `data_report` int(11) NOT NULL DEFAULT \'0\',
-  `hour` tinyint(4) NOT NULL DEFAULT \'0\',
-  `entity` int(11) NOT NULL DEFAULT \'0\',
-  `data_1` varchar(16) DEFAULT NULL,
-  `data_2` varchar(16) DEFAULT NULL,
-  PRIMARY KEY (`data_report`,`hour`,`entity`),
-  KEY `entity` (`entity`),
-  CONSTRAINT `data_ibfk_1` FOREIGN KEY (`data_report`) REFERENCES `data_report` (`id`),
-  CONSTRAINT `data_ibfk_2` FOREIGN KEY (`entity`) REFERENCES `entity` (`id`)
-) ENGINE=InnoDB;',
          fks => {
             data_ibfk_1 => {
                name     => 'data_ibfk_1',
@@ -168,26 +134,11 @@ test_fki(
       {
          db  => 'test',
          tbl => 'entity',
-         ddl => 'CREATE TABLE `entity` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `entity_property_1` varchar(16) DEFAULT NULL,
-  `entity_property_2` varchar(16) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `entity_property_1` (`entity_property_1`,`entity_property_2`)
-) ENGINE=InnoDB;',
          fks => undef,
       },
       {
          db  => 'test',
          tbl => 'data_report',
-         ddl => 'CREATE TABLE `data_report` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `date` date DEFAULT NULL,
-  `posted` datetime DEFAULT NULL,
-  `acquired` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `date` (`date`,`posted`,`acquired`)
-) ENGINE=InnoDB;',
          fks => undef,
       },
    ],

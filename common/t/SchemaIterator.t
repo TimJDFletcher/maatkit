@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 26;
+use Test::More tests => 29;
 
 use SchemaIterator;
 use FileIterator;
@@ -18,6 +18,7 @@ use DSNParser;
 use Sandbox;
 use OptionParser;
 use MySQLDump;
+use TableParser;
 use MaatkitTest;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
@@ -32,7 +33,7 @@ my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
 my $dbh = $sb->get_dbh_for('master');
 
-my $du;
+my ($du, $tp);
 my $fi = new FileIterator();
 my $o  = new OptionParser(description => 'SchemaIterator');
 $o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
@@ -53,18 +54,22 @@ sub test_so {
    my $si;
    if ( $args{files} ) {
       my $file_itr = $fi->get_file_itr(@{$args{files}});
-       $si = new SchemaIterator(
+      $si = new SchemaIterator(
          file_itr     => $file_itr,
+         keep_ddl     => defined $args{keep_ddl} ? $args{keep_ddl} : 1,
          OptionParser => $o,
          Quoter       => $q,
+         TableParser  => $tp,
       );
    }
    else {
       $si = new SchemaIterator(
          dbh          => $dbh,
+         keep_ddl     => defined $args{keep_ddl} ? $args{keep_ddl} : 1,
          OptionParser => $o,
          Quoter       => $q,
          MySQLDump    => $du,
+         TableParser  => $tp,
       );
    }
 
@@ -73,15 +78,23 @@ sub test_so {
    my $result_file = -f "$trunk/$args{result}";
 
    my $res = "";
+   my @objs;
    while ( my $obj = $si->next_schema_object() ) {
-      if ( $result_file || $args{ddl} ) {
-         $res .= "$obj->{db}.$obj->{tbl}\n";
-         $res .= "$obj->{ddl}\n\n" if $args{ddl} || $du;
+      if ( $args{return_objs} ) {
+         push @objs, $obj;
       }
       else {
-         $res .= "$obj->{db}.$obj->{tbl} ";
+         if ( $result_file || $args{ddl} ) {
+            $res .= "$obj->{db}.$obj->{tbl}\n";
+            $res .= "$obj->{ddl}\n\n" if $args{ddl} || $du;
+         }
+         else {
+            $res .= "$obj->{db}.$obj->{tbl} ";
+         }
       }
    }
+
+   return \@objs if $args{return_objs};
 
    if ( $result_file ) {
       ok(
@@ -297,7 +310,7 @@ SKIP: {
 
 
    # ########################################################################
-   # Get CREATE TALBE (ddl).
+   # Getting CREATE TALBE (ddl).
    # ########################################################################
    $du = new MySQLDump();
    test_so(
@@ -343,7 +356,62 @@ test_so(
    test_name => "Filter dump file by --databases",
 );
 
+# ############################################################################
+# Getting tbl_struct.
+# ############################################################################
+my $objs = test_so(
+   files     => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
+);
 
+my $n_tbl_structs = grep { exists $_->{tbl_struct} } @$objs;
+
+is(
+   $n_tbl_structs,
+   0,
+   'No tbl_struct without TableParser'
+);
+
+$tp = new TableParser(Quoter => $q);
+
+$objs = test_so(
+   files     => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
+);
+
+$n_tbl_structs = grep { exists $_->{tbl_struct} } @$objs;
+
+is(
+   $n_tbl_structs,
+   scalar @$objs,
+   'Got tbl_struct for each schema object'
+);
+
+# Kill the TableParser obj in case the next tests don't want to use it.
+$tp = undef;
+
+# ############################################################################
+# keep_ddl
+# ############################################################################
+$objs = test_so(
+   files       => ["$in/dump001.txt"],
+   result      => "",  # hack to let return_objs work
+   test_name   => "",  # hack to let return_objs work
+   return_objs => 1,
+   keep_ddl    => 0,
+);
+
+my $n_ddls = grep { exists $_->{ddl} } @$objs;
+
+is(
+   $n_ddls,
+   0,
+   'DDL deleted unless keep_ddl'
+);
 
 # #############################################################################
 # Done.

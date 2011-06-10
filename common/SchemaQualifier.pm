@@ -22,8 +22,8 @@ package SchemaQualifier;
 { # package scope
 use strict;
 use warnings FATAL => 'all';
-
 use English qw(-no_match_vars);
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
@@ -31,176 +31,168 @@ $Data::Dumper::Quotekeys = 0;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
-sub new {
-   my ( $class, %args ) = @_;
-   my @required_args = qw(TableParser Quoter);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my $self = {
-      %args,
-      schema                => {},  # db > tbl > col
-      duplicate_column_name => {},
-      duplicate_table_name  => {},
-   };
-   return bless $self, $class;
-}
-
-sub schema {
-   my ( $self ) = @_;
-   return $self->{schema};
-}
-
-sub get_duplicate_column_names {
-   my ( $self ) = @_;
-   return keys %{$self->{duplicate_column_name}};
-}
-
-sub get_duplicate_table_names {
-   my ( $self ) = @_;
-   return keys %{$self->{duplicate_table_name}};
-}
-
-# Sub: set_schema_from_mysqldump
-#   Set internal schema structure using mysqldump output parsed by
-#   <MysqldumpParser::parse_create_tables()>.
+# Sub: new
 #
 # Parameters:
 #   %args - Arguments
 #
-# Required Arguments:
-#   dump - Hashref of parsed mysqldump output from
-#          <MysqldumpParser::parse_create_tables()>.
-sub set_schema_from_mysqldump {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(dump);
+# Optional Arguments:
+#   allow_duplicate_columns - Allow duplicate column names (default false)
+#   allow_duplicate_tables  - Allow duplicate table names (default false)
+#
+# Returns:
+#  SchemaQualifier object
+sub new {
+   my ( $class, %args ) = @_;
+   my @required_args = qw();
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dump) = @args{@required_args};
 
-   my $schema = $self->{schema};
-   my $tp     = $self->{TableParser};
-   my %column_name;
-   my %table_name;
+   my $self = {
+      %args,
+      schema  => {},  # keyed off db->tbl
+      columns => {},
+      tables  => {},
+   };
+   return bless $self, $class;
+}
 
-   DATABASE:
-   foreach my $db (keys %$dump) {
-      if ( !$db ) {
-         warn "Empty database from parsed mysqldump output";
-         next DATABASE;
-      }
+sub is_duplicate_column {
+   my ( $self, $col ) = @_;
+   return unless $col;
+   return ($self->{columns}->{$col} || 0) > 1 ? 1 : 0;
+}
 
-      TABLE:
-      foreach my $table_def ( @{$dump->{$db}} ) {
-         if ( !$table_def ) {
-            warn "Empty CREATE TABLE for database $db parsed from mysqldump output";
-            next TABLE;
-         }
-         my $tbl_struct = $tp->parse($table_def);
-         $schema->{$db}->{$tbl_struct->{name}} = $tbl_struct->{is_col};
+sub is_duplicate_table {
+   my ( $self, $tbl ) = @_;
+   return unless $tbl;
+   return ($self->{tables}->{$tbl} || 0) > 1 ? 1 : 0;
+}
 
-         map { $column_name{$_}++ } @{$tbl_struct->{cols}};
-         $table_name{$tbl_struct->{name}}++;
-      }
+# Sub: add_schema_object
+#   Add a schema object.  This sub is called by
+#   <SchemaIterator::next_schema_object()>.
+#
+# Parameters:
+#   $schema_object - Schema object hashref.
+#
+# Required Arguments:
+#   schema_object - Schema object hashref.
+sub add_schema_object {
+   my ( $self, $schema_object ) = @_;
+   die "I need an obj argument" unless $schema_object;
+
+   my ($db, $tbl) = @{$schema_object}{qw(db tbl)};
+   my $tbl_struct = $schema_object->{tbl_struct};
+   if ( !$tbl_struct ) {
+      warn "No table structure for $db.$tbl";
+      next SCHEMA_OBJECT;
+   }
+   $self->{schema}->{$db}->{$tbl} = $tbl_struct->{is_col};
+
+   if ( !$self->{allow_duplicate_columns} ) {
+      map { $self->{columns}->{$_}++ } @{$tbl_struct->{cols}};
+   }
+   if ( !$self->{allow_duplicate_tables} ) {
+      $self->{tables}->{$tbl_struct->{name}}++;
    }
 
-   # Save duplicate column names.
-   map { $self->{duplicate_column_name}->{$_} = 1 }
-   grep { $column_name{$_} > 1 }
-   keys %column_name;
-
-   # Save duplicate table names.
-   map { $self->{duplicate_table_name}->{$_} = 1 }
-   grep { $table_name{$_} > 1 }
-   keys %table_name;
-
-   MKDEBUG && _d('Schema:', Dumper($schema));
    return;
 }
 
 sub qualify_column {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(column);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($column) = @args{@required_args};
-
+   my ( $self, $column ) = @_;
+   die "I need a column argument" unless $column;
    MKDEBUG && _d('Qualifying', $column);
+
    my ($col, $tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $column;
    MKDEBUG && _d('Column', $column, 'has db', $db, 'tbl', $tbl, 'col', $col);
 
-   my %qcol = (
-      db  => $db,
-      tbl => $tbl,
-      col => $col,
-   );
-   if ( !$qcol{tbl} ) {
-      @qcol{qw(db tbl)} = $self->get_table_for_column(column => $qcol{col});
+   my $original_col = {db => $db, tbl => $tbl, col => $col};
+   my @qcols;
+   if ( !$tbl ) {
+      if ( $self->is_duplicate_column($col) ) {
+         MKDEBUG && _d('Column name is duplicate, cannot qualify it');
+      }
+      else {
+         foreach my $tbl ( $self->_get_tables_for_column($col) ) {
+            push @qcols, {
+               db  => $tbl->[0],
+               tbl => $tbl->[1],
+               col => $col,
+            };
+         }
+         if ( !@qcols ) {
+            MKDEBUG && _d('Column', $col, 'does not exist');
+         }
+      }
    }
-   elsif ( !$qcol{db} ) {
-      $qcol{db} = $self->get_database_for_table(table => $qcol{tbl});
+   elsif ( !$db ) {
+      if ( $self->is_duplicate_table($tbl) ) {
+         MKDEBUG && _d('Table name is duplicate, cannot qualify it');
+      }
+      else {
+         foreach my $db ( $self->_get_database_for_table($tbl) ) {
+            push @qcols, {
+               db  => $db,
+               tbl => $tbl,
+               col => $col,
+            };
+         }
+         if ( !@qcols ) {
+            MKDEBUG && _d('Table', $tbl, 'does not exist');
+         }
+      }
    }
    else {
       MKDEBUG && _d('Column is already database-table qualified');
    }
 
-   return \%qcol;
+   # If @qcols is empty, then we failed to qualify the column.
+   # Return the original, whatever was given to us.
+   push @qcols, $original_col unless @qcols;
+
+   # If duplicate columns are allowed, then return an arryref.  The caller
+   # should expect this since the column may be in more than one table.
+   # Else, there should only be one qualified column in @qcols, so return it.
+   return $self->{allow_duplicate_columns} ? \@qcols : shift @qcols;
 }
 
-sub get_table_for_column {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(column);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($col) = @args{@required_args};
-   MKDEBUG && _d('Getting table for column', $col);
-
-   if ( $self->{duplicate_column_name}->{$col} ) {
-      MKDEBUG && _d('Column name is duplicate, cannot qualify it');
-      return;
-   }
-
+sub _get_tables_for_column {
+   my ( $self, $col ) = @_;
+   die "I need a col argument" unless $col;
+   MKDEBUG && _d('Getting tables for column', $col);
+   
    my $schema = $self->{schema};
+   my @tbls;
    foreach my $db ( keys %{$schema} ) {
       foreach my $tbl ( keys %{$schema->{$db}} ) {
          if ( $schema->{$db}->{$tbl}->{$col} ) {
             MKDEBUG && _d('Column is in database', $db, 'table', $tbl);
-            return $db, $tbl;
+            push @tbls, [$db, $tbl];
          }
       }
    }
 
-   MKDEBUG && _d('Failed to find column in any table');
-   return;
+   return @tbls;
 }
 
-sub get_database_for_table {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(table);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($tbl) = @args{@required_args};
-   MKDEBUG && _d('Getting database for table', $tbl);
+sub _get_database_for_table {
+   my ( $self, $tbl ) = @_;
+   die "I need a tbl argument" unless $tbl;
+   MKDEBUG && _d('Getting databases for table', $tbl);
    
-   if ( $self->{duplicate_table_name}->{$tbl} ) {
-      MKDEBUG && _d('Table name is duplicate, cannot qualify it');
-      return;
-   }
-
    my $schema = $self->{schema};
+   my @dbs;
    foreach my $db ( keys %{$schema} ) {
      if ( $schema->{$db}->{$tbl} ) {
        MKDEBUG && _d('Table is in database', $db);
-       return $db;
+       push @dbs, $db;
      }
    }
 
-   MKDEBUG && _d('Failed to find table in any database');
-   return;
+   return @dbs;
 }
 
 sub _d {

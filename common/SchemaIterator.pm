@@ -55,7 +55,11 @@ my $tbl_name     = qr{
 #   Quoter       - <Quoter> object.
 #
 # Optional Arguments:
-#   MySQLDump - <MySQLDump> object to get CREATE TABLE when iterating a dbh.
+#   SchemaQualifier - <SchemaQualifier> object to initialize.
+#   MySQLDump       - <MySQLDump> object to get CREATE TABLE when iterating dbh.
+#   TableParser     - <TableParser> object to parse CREATE TABLE and return
+#                     tbl_struct.
+#   keep_ddl        - Keep CREATE TABLE (default false)
 #
 # Returns:
 #   SchemaIterator object
@@ -168,33 +172,46 @@ sub _make_filters {
 #   (i.e. the obj was created with a file_itr arg), then the returned
 #   schema object will always have a ddl (see below).  But if iterating
 #   a dbh, then you must create the obj with a MySQLDump obj to get a ddl.
+#   If this object was created with a TableParser, then the ddl, if present,
+#   is parsed, too.
 #
 # Returns:
 #   Hashref of schema object with at least a db and tbl keys, like
 #   (start code)
 #   {
-#      db   => 'test',
-#      tbl  => 'a',
-#      ddl  => "CREATE TABLE `a` (
-#                 `c1` smallint(5) unsigned NOT NULL AUTO_INCREMENT,
-#                 `c2` varchar(45) NOT NULL
-#               );",
+#      db         => 'test',
+#      tbl        => 'a',
+#      ddl        => 'CREATE TABLE `a` ( ... ',
+#      tbl_struct => <TableParser::parse()> hashref of parsed ddl,
 #   }
 #   (end code)
 #   The ddl is suitable for <TableParser::parse()>.
 sub next_schema_object {
    my ( $self ) = @_;
 
-   my $schema_object;
+   my $schema_obj;
    if ( $self->{file_itr} ) {
-      $schema_object = $self->_iterate_files();
+      $schema_obj= $self->_iterate_files();
    }
    else { # dbh
-      $schema_object = $self->_iterate_dbh();
+      $schema_obj= $self->_iterate_dbh();
    }
 
-   MKDEBUG && _d('Next schema object:', Dumper($schema_object));
-   return $schema_object;
+   if ( $schema_obj ) {
+      if ( $schema_obj->{ddl} && $self->{TableParser} ) {
+         $schema_obj->{tbl_struct}
+            = $self->{TableParser}->parse($schema_obj->{ddl});
+      }
+
+      delete $schema_obj->{ddl} unless $self->{keep_ddl};
+
+      if ( my $schema_qualifer = $self->{SchemaQualifier} ) {
+         $schema_qualifer->add_schema_object($schema_obj);
+      }
+   }
+
+   MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
+   return $schema_obj;
 }
 
 sub _iterate_files {
