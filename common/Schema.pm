@@ -17,6 +17,38 @@
 # ###########################################################################
 # Schema package $Revision$
 # ###########################################################################
+
+# Package: Schema
+# Schema encapsulates a data structure representing databases and tables.
+# Although in MySQL "schema" is technically equivalent to "databae", we
+# use "schema" loosely to mean a collection of schema objects: databases,
+# tables, and columns.  These objects are organized in a hash keyed on
+# database and table names.  The hash is called schema and looks like,
+# (start code)
+#   db1 => {
+#      tbl1 => {
+#         db         => 'db1',
+#         tbl        => 'tbl1',
+#         tbl_struct => <TableParser::parse()>
+#         ddl        => "CREATE TABLE `tbl` ( ...",
+#      }
+#   }
+# (stop code)
+# Each table has at least a db and tbl key and probably a tbl_struct.
+#
+# The important thing about a Schema object is that it should be the only
+# data structure with this data, and other modules should reference and add
+# data to it rather than creating other similar copies.  <ColumnMap> does
+# this for example.
+#
+# The other important thing about a Schema object is that the data structure
+# is the standard.  Other modules should take db or tbl hashrefs pointing
+# into the data structure.  Tbl hashrefs should always have at least at db
+# and tbl key (which is redundant but necessary so that each tbl hashref
+# includes its own database and table name).
+#
+# Schema objects are usually added by a <SchemaIterator>, but you can add
+# them manually if needed; see <add_schema_object()>.
 package Schema;
 
 { # package scope
@@ -47,11 +79,16 @@ sub new {
 
    my $self = {
       %args,
-      schema  => {},  # keyed off db->tbl
+      schema  => {},  # keyed on db->tbl
       columns => {},
       tables  => {},
    };
    return bless $self, $class;
+}
+
+sub get_schema {
+   my ( $self ) = @_;
+   return $self->{schema};
 }
 
 sub get_table {

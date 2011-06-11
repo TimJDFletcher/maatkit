@@ -17,6 +17,14 @@
 # ###########################################################################
 # ForeignKeyIterator package $Revision$
 # ###########################################################################
+
+# Package: ForeignKeyIterator
+# ForeignKeyIterator iterates from or to a table by its foreign key constraints.
+# This is a special type of <SchemaIterator> with the same interface, so it
+# can be used in place of a <SchemaIterator>, but internally it functions
+# very differently.  Whereas a <SchemaIterator> is a real iterator that only
+# gets the next schema object when called, a ForeignKeyIterator slurps the
+# given <SchemaIterator> so it can discover foreign key constraints.
 package ForeignKeyIterator;
 
 { # package scope
@@ -38,7 +46,9 @@ $Data::Dumper::Quotekeys = 0;
 # Required Arguments:
 #   db             - Database of tbl.
 #   tbl            - Table to iterate from to its referenced tables.
-#   SchemaIterator - <SchemaIterator> object created with keep_ddl=>true.
+#   Schema         - <Schema> object.
+#   SchemaIterator - <SchemaIterator> object created with Schema and
+#                    keep_ddl=>true.
 #   TableParser    - <TableParser> object.
 #   Quoter         - <Quoter> object.
 #
@@ -49,7 +59,7 @@ $Data::Dumper::Quotekeys = 0;
 #   ForeignKeyIterator object
 sub new {
    my ( $class, %args ) = @_;
-   my @required_args = qw(db tbl SchemaIterator TableParser Quoter);
+   my @required_args = qw(db tbl Schema SchemaIterator TableParser Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
@@ -69,52 +79,54 @@ sub new {
 #   Hashref of schema object with at least a db and tbl keys, like
 #   (start code)
 #   {
-#      db   => 'test',
-#      tbl  => 'a',
-#      fks  => hasref from <TableParser::get_fks()>,
+#      db         => 'test',
+#      tbl        => 'a',
+#      ddl        => 'CREATE TABLE `a` ( ...',
+#      tbl_struct => <TableParser::parse()> hashref of parsed ddl,
+#      fk_struct  => <TableParser::get_fks()> hashref of parsed fk constraints
 #   }
 #   (end code)
 sub next_schema_object {
    my ( $self ) = @_;
 
    if ( !exists $self->{fk_refs} ) {
-      $self->_set_fk_refs();
+      # The default code order is (childN, child1, parent), but the default
+      # user order is (parent, child1, childN).  So the two are opposite.
+      # Thus for default user order we reverse code order, and for reverse
+      # user order we keep the default code order.  Yes, it's a confusing
+      # double negative, but it can't be avoided.
+      my @fk_refs = $self->_get_fk_refs();
+      @fk_refs = reverse @fk_refs if !$self->{reverse};
+      MKDEBUG && _d("Foreign key table order:\n",
+         map { "$_->{db}.$_->{tbl}\n" } @fk_refs);
+
+      # Save the originals and then create a copy of them to return
+      # when called.  If reset, then copy originals back to fk_refs.
+      $self->{original_fk_refs} = \@fk_refs;
+      $self->{fk_refs}          = [@fk_refs]; # copy
    }
 
-   my $schema_obj;
-   my $fk_ref = $self->{reverse} ? shift @{$self->{fk_refs}}
-              :                    pop   @{$self->{fk_refs}};
-   if ( $fk_ref ) {
-      my $fk_ref_schema = $self->{schema}->{$fk_ref->{db}}->{$fk_ref->{tbl}};
-      $schema_obj  = {
-         db  => $fk_ref->{db},
-         tbl => $fk_ref->{tbl},
-         fks => $fk_ref_schema->{fks},
-      };
-   }
+   my $schema_obj = shift @{$self->{fk_refs}};
    MKDEBUG && _d('Next schema object:', Dumper($schema_obj));
    return $schema_obj;
 }
 
-sub _set_fk_refs {
+sub reset {
    my ( $self ) = @_;
-   $self->_set_schema();
-
-   my @fk_refs = $self->_recurse_fk_references($self->{schema});
-   MKDEBUG && _d('Foreign key table order:', Dumper(\@fk_refs));
-   $self->{fk_refs} = \@fk_refs;
-
+   $self->{fk_refs} = [ @{$self->{original_fk_refs}} ]; # copy
+   MKDEBUG && _d('ForeignKeyIterator reset');
    return;
 }
 
-sub _set_schema {
+sub _get_fk_refs {
    my ( $self ) = @_;
    my $schema_itr = $self->{SchemaIterator};
    my $tp         = $self->{TableParser};
    my $q          = $self->{Quoter};
-   MKDEBUG && _d('Setting schema from SchemaIterator');
+   MKDEBUG && _d('Loading schema from SchemaIterator');
 
-   my %schema;
+   # First we need to load all schema objects from the iterator and
+   # parse any foreign key constraints.
    SCHEMA_OBJECT:
    while ( my $obj = $schema_itr->next_schema_object() ) {
       my ($db, $tbl) = @{$obj}{qw(db tbl)};
@@ -133,37 +145,28 @@ sub _set_schema {
          next SCHEMA_OBJECT;
       }
 
-      # Create a hashref for this schema object unless one already exists.
-      # One may already exist because referenced_by created it.  We don't
-      # need to save the ddl; it's just used for get_fks() and then we save
-      # the fks struct.
-      $schema{$db}->{$tbl} ||= {
-         tbl_struct => $obj->{tbl_struct},
-      };
-
       my $fks = $tp->get_fks($obj->{ddl}, { database => $db });
       if ( $fks && scalar values %$fks ) {
-         $schema{$db}->{$tbl}->{fks} = $fks;
+         $obj->{fk_struct} = $fks;
          foreach my $fk ( values %$fks ) {
             my ($fk_db, $fk_tbl) = $q->split_unquote($fk->{parent_tbl});
-            push @{$schema{$db}->{$tbl}->{references}}, [$fk_db, $fk_tbl];
-            push @{$schema{$fk_db}->{$fk_tbl}->{referenced_by}}, [$db, $tbl];
+            push @{$obj->{references}}, [$fk_db, $fk_tbl];
          }
       }
    }
 
-   $self->{schema} = \%schema;
-   return;
+   # Now we can recurse through the foreign key references, starting with
+   # the target db.tbl.
+   return $self->_recurse_fk_references(
+      $self->{Schema}->get_schema(),
+      $self->{db},
+      $self->{tbl},
+   );
 }
 
 sub _recurse_fk_references {
    my ( $self, $schema, $db, $tbl, $seen ) = @_;
-
-   if ( !$db || !$tbl || !$seen ) {
-      $db    = $self->{db};
-      $tbl   = $self->{tbl};
-      $seen  = {};
-   }
+   $seen ||= {};
 
    if ( $seen && $seen->{"$db$tbl"}++ ) {
       MKDEBUG && _d('Circular reference, already seen', $db, $tbl);
@@ -181,7 +184,7 @@ sub _recurse_fk_references {
    }
 
    MKDEBUG && _d('No more tables referenced by', $db, $tbl);
-   push @fk_refs, { db => $db, tbl => $tbl };
+   push @fk_refs, $schema->{$db}->{$tbl};
 
    return @fk_refs;
 }

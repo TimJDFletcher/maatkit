@@ -180,7 +180,7 @@ sub _make_filters {
 #   {
 #      db         => 'test',
 #      tbl        => 'a',
-#      ddl        => 'CREATE TABLE `a` ( ... ',
+#      ddl        => 'CREATE TABLE `a` ( ...',  # if keep_ddl
 #      tbl_struct => <TableParser::parse()> hashref of parsed ddl,
 #   }
 #   (end code)

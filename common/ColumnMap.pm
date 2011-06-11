@@ -18,6 +18,17 @@
 # ColumnMap package $Revision$
 # ###########################################################################
 
+# Package: ColumnMap
+# ColumnMap maps columns from one table to other tables.  A column map helps
+# decompose a table into serveral other tables (for example, normalizing a
+# denormalized table).  For all columns in the given table, the given <Schema>
+# is searched for other tables with identical column names.  It's possible
+# for a single column to map to multiple columns in different tables.
+#
+# A column map is used by selecting mapped columns from the table, then
+# inserting columns mapped to the other tables using the mapped column values
+# selected.  See the test file or mk-insert-normalized and its test for
+# examples.
 package ColumnMap;
 
 { # package scope

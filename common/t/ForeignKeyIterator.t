@@ -9,10 +9,11 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 4;
+use Test::More tests => 7;
 
-use ForeignKeyIterator;
+use Schema;
 use SchemaIterator;
+use ForeignKeyIterator;
 use FileIterator;
 use Quoter;
 use TableParser;
@@ -43,40 +44,54 @@ sub test_fki {
       die "I need a $arg argument" unless defined $args{$arg};
    }
 
-   @ARGV = $args{filters} ? @{$args{filters}} : ();
-   $o->get_opts();
+   my $fki = $args{fki};
+   if ( !$fki ) {
+      @ARGV = $args{filters} ? @{$args{filters}} : ();
+      $o->get_opts();
 
-   my $file_itr = $fi->get_file_itr(@{$args{files}});
-   my $si = new SchemaIterator(
-      file_itr     => $file_itr,
-      OptionParser => $o,
-      Quoter       => $q,
-      TableParser  => $tp,
-      keep_ddl     => 1,
-   );
+      my $file_itr = $fi->get_file_itr(@{$args{files}});
+      my $schema = new Schema();
+      my $si    = new SchemaIterator(
+         file_itr     => $file_itr,
+         OptionParser => $o,
+         Quoter       => $q,
+         TableParser  => $tp,
+         keep_ddl     => 1,
+         Schema       => $schema,
+      );
 
-   my $fki = new ForeignKeyIterator(
-      db             => $args{db},
-      tbl            => $args{tbl},
-      reverse        => $args{reverse},
-      SchemaIterator => $si,
-      Quoter         => $q,
-      TableParser    => $tp,
-   );
+      $fki = new ForeignKeyIterator(
+         db             => $args{db},
+         tbl            => $args{tbl},
+         reverse        => $args{reverse},
+         SchemaIterator => $si,
+         Quoter         => $q,
+         TableParser    => $tp,
+         Schema         => $schema,
+      );
+   }
 
-   my @got;
+   my @got_objs;
    while ( my $obj = $fki->next_schema_object() ) {
-      delete $obj->{fks} unless $args{fks};
-      push @got, $obj;
+      my %got = (
+         db  => $obj->{db},
+         tbl => $obj->{tbl},
+      );
+      $got{fk_struct} = $obj->{fk_struct} if $args{fk_struct};
+      push @got_objs, \%got;
    }
 
    is_deeply(
-      \@got,
+      \@got_objs,
       $args{result},
       $args{test_name},
-   ) or print Dumper(\@got);
+   ) or print Dumper(\@got_objs);
 
-   return;
+   if ( $args{stop} ) {
+      die "Stopped after test $args{test_name}";
+   }
+
+   return $fki;
 }
 
 test_fki(
@@ -105,12 +120,12 @@ test_fki(
    files     => ["$in/fktbls002.sql"],
    db        => 'test',
    tbl       => 'data',
-   fks       => 1,
+   fk_struct => 1,
    result    => [
       {
-         db  => 'test',
-         tbl => 'data',
-         fks => {
+         db        => 'test',
+         tbl       => 'data',
+         fk_struct => {
             data_ibfk_1 => {
                name     => 'data_ibfk_1',
                colnames => '`data_report`',
@@ -132,14 +147,14 @@ test_fki(
          },
       },
       {
-         db  => 'test',
-         tbl => 'entity',
-         fks => undef,
+         db        => 'test',
+         tbl       => 'entity',
+         fk_struct => undef,
       },
       {
-         db  => 'test',
-         tbl => 'data_report',
-         fks => undef,
+         db        => 'test',
+         tbl       => 'data_report',
+         fk_struct => undef,
       },
    ],
 );
@@ -176,6 +191,61 @@ test_fki(
       { db  => 'sakila', tbl => 'store'    },
       { db  => 'sakila', tbl => 'customer' },
    ],
+);
+
+
+# ############################################################################
+# Can we reset and re-iterate?
+# ############################################################################
+my $fki1 = test_fki(
+   test_name => 'Iteration 1',
+   files     => ["$in/fktbls001.sql"],
+   db        => 'test',
+   tbl       => 'address',
+   result    => [
+      {
+         db  => 'test',
+         tbl => 'address',
+      },
+      {
+         db  => 'test',
+         tbl => 'city',
+      },
+      {
+         db  => 'test',
+         tbl => 'country',
+      },
+   ],
+);
+
+$fki1->reset();
+
+my $fki2 = test_fki(
+   test_name => 'Iteration 2',
+   files     => '',  # hack to satisfy required args,
+   db        => '',  # these also insure that the given
+   tbl       => '',  # fki is reused...
+   fki       => $fki1,
+   result    => [
+      {
+         db  => 'test',
+         tbl => 'address',
+      },
+      {
+         db  => 'test',
+         tbl => 'city',
+      },
+      {
+         db  => 'test',
+         tbl => 'country',
+      },
+   ],
+);
+
+is(
+   $fki1,
+   $fki2,
+   'Reset and reused ForeignKeyIterator'
 );
 
 # #############################################################################
