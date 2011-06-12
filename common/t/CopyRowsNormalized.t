@@ -271,7 +271,7 @@ $copy_rows = make_copier(
 );
 
 # Work in progres...
-# $copy_rows->copy();
+$copy_rows->copy();
 
 # #############################################################################
 # Done.
@@ -287,5 +287,5 @@ like(
    qr/Complete test coverage/,
    '_d() works'
 );
-$sb->wipe_clean($dbh);
+#$sb->wipe_clean($dbh);
 exit;

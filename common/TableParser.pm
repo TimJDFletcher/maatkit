@@ -424,11 +424,16 @@ sub get_fks {
       my %parent_tbl = (tbl => $tbl);
       $parent_tbl{db} = $db if $db;
 
+      if ( $parent !~ m/\./ && $opts->{database} ) {
+         $parent = $q->quote($opts->{database}) . ".$parent";
+      }
+
       $fks->{$name} = {
          name           => $name,
          colnames       => $cols,
          cols           => [ map { s/[ `]+//g; $_; } split(',', $cols) ],
          parent_tbl     => \%parent_tbl,
+         parent_tblname => $parent,
          parent_cols    => [ map { s/[ `]+//g; $_; } split(',', $parent_cols) ],
          parent_colnames=> $parent_cols,
          ddl            => $fk,

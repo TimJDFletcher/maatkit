@@ -104,10 +104,10 @@ sub new {
    # will come from the SELECT statement(s) above.  The ColumnMap tells us
    # which values from the source should be inserted into the given dest.
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
-      my @cols = $column_map->columns_mapped_to($dst_tbl);
+      my $cols = $column_map->columns_mapped_to($dst_tbl);
       my $sql  = "INSERT INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
-               . ' (' . join(', ', @cols) . ')'
-               . ' VALUES (' . join(', ', map { '?' } @cols) . ')';
+               . ' (' . join(', ', @$cols) . ')'
+               . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
 
       # Append a trace msg so someone looking through binlogs can tell
       # where these inserts originated and what they meant to do.
@@ -119,12 +119,12 @@ sub new {
 
       MKDEBUG && _d($sql);
       my $sth = $dst->{dbh}->prepare($sql);
-      $dst_tbl->{insert} = { sth => $sth, cols => \@cols };
+      $dst_tbl->{insert} = { sth => $sth, cols => $cols };
 
       if ( $args{foreign_keys} ) {
          $dst_tbl->{insert}->{last_insert_id} = _make_last_insert_id_callback(
             tbl  => $dst_tbl,
-            cols => { map { $_ => 1 } @cols },
+            cols => { map { $_ => 1 } $cols },
             %args
          );
       }
