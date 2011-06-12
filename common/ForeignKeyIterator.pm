@@ -134,19 +134,18 @@ sub _get_fk_refs {
       if ( !$obj->{ddl} ) {
          # If the SchemaIterator obj was created with a dbh, this probably
          # means that it was not also created with a MySQLDump obj.
-         warn "No CREATE TABLE for $db.$tbl";
-         next SCHEMA_OBJECT;
+         die "No CREATE TABLE for $db.$tbl";
       }
 
       if ( !$obj->{tbl_struct} ) {
          # This probably means that the SchemaIterator obj wasn't created
          # with a TableParser obj.
-         warn "No table structure for $db.$tbl";
-         next SCHEMA_OBJECT;
+         die "No table structure for $db.$tbl";
       }
 
       my $fks = $tp->get_fks($obj->{ddl}, { database => $db });
       if ( $fks && scalar values %$fks ) {
+         MKDEBUG && _d('Table', $db, $tbl, 'has foreign keys');
          $obj->{fk_struct} = $fks;
          foreach my $fk ( values %$fks ) {
             my ($fk_db, $fk_tbl) = $q->split_unquote($fk->{parent_tbl});
