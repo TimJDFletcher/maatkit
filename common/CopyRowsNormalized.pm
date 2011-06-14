@@ -71,7 +71,7 @@ sub new {
    my $asc = $nibbler->generate_asc_stmt(
       tbl_struct => $src->{tbl}->{tbl_struct},
       index      => $index,
-      cols       => [ $column_map->mapped_columns() ],
+      cols       => $column_map->mapped_columns($src->{tbl}),
       asc_first  => defined $args{asc_first} ? $args{asc_first} : 1,
       asc_only   => defined $args{asc_only}  ? $args{asc_only}  : 1,
    );
@@ -104,7 +104,7 @@ sub new {
    # will come from the SELECT statement(s) above.  The ColumnMap tells us
    # which values from the source should be inserted into the given dest.
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
-      my $cols = $column_map->columns_mapped_to($dst_tbl);
+      my $cols = $column_map->mapped_columns($dst_tbl);
       my $sql  = "INSERT INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
                . ' (' . join(', ', @$cols) . ')'
                . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';

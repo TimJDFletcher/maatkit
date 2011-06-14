@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 2;
+use Test::More tests => 6;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -22,13 +22,13 @@ use DSNParser;
 use Quoter;
 use TableParser;
 use FileIterator;
-use SchemaIterator;
 use Schema;
+use SchemaIterator;
+use ForeignKeyIterator;
 use ColumnMap;
 
 my $q  = new Quoter;
 my $tp = new TableParser(Quoter => $q);
-my $fi = new FileIterator();
 
 my $o  = new OptionParser(description => 'SchemaIterator');
 @ARGV = qw();
@@ -36,29 +36,101 @@ $o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
 $o->get_opts();
 
 my $in = "$trunk/common/t/samples/mysqldump-no-data/";
+my $schema;
+my $column_map;
 
-my $file_itr = $fi->get_file_itr("$in/dump002.txt");
-my $schema   = new Schema();
-my $si       = new SchemaIterator (
-   file_itr     => $file_itr,
-   OptionParser => $o,
-   Quoter       => $q,
-   TableParser  => $tp,
-   Schema       => $schema,
-);
+sub make_column_map {
+   my ( %args ) = @_;
 
-# Init the schema qualifier.
-1 while(defined $si->next_schema_object());
+   my $fi       = new FileIterator();
+   my $file_itr = $fi->get_file_itr(@{$args{files}});
+   
+   $schema = new Schema();
 
-my $column_map = new ColumnMap(
-   tbl    => $schema->get_table('test', 'raw_data'),
-   Schema => $schema,
+   my $schema_itr;
+   my $si       = new SchemaIterator(
+      file_itr     => $file_itr,
+      OptionParser => $o,
+      Quoter       => $q,
+      TableParser  => $tp,
+      Schema       => $schema,
+      keep_ddl     => $args{foreign_keys} ? 1 : 0,
+   );
+   if ( $args{foreign_keys} ) {
+      $schema_itr = new ForeignKeyIterator(
+         db             => $args{src_db},
+         tbl            => $args{src_tbl},
+         reverse        => 1,
+         SchemaIterator => $si,
+         Quoter         => $q,
+         TableParser    => $tp,
+         Schema         => $schema,
+      );
+   }
+   else {
+      $schema_itr = $si;
+   }
+
+   # Init the schema qualifier.
+   1 while(defined $schema_itr->next_schema_object());
+
+   $column_map = new ColumnMap(
+      src_tbl => $schema->get_table($args{src_db}, $args{src_tbl}),
+      Schema  => $schema,
+   );
+}
+
+make_column_map(
+   files        => ["$in/dump002.txt"],
+   src_db       => 'test',
+   src_tbl      => 'raw_data',
+   foreign_keys => 1,
 );
 
 is_deeply(
-   [ $column_map->mapped_columns() ],
+   $column_map->mapped_columns($schema->get_table('test', 'raw_data')),
    [qw(date hour entity_property_1 entity_property_2 data_1 data_2)],
-   "Mapped columns"
+   "Map source table columns, raw_data"
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
+   [qw(date)],
+   "Map dest table columns, data_report"
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'entity')),
+   [qw(entity_property_1 entity_property_2)],
+   "Map dest table columns, entity"
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'data')),
+   [qw(data_report hour entity data_1 data_2)],
+   "Map dest table columns, data"
+);
+
+my $data_report_tbl = $schema->get_table('test', 'data_report');
+my $entity_tbl      = $schema->get_table('test', 'entity');
+is_deeply(
+   $column_map->mapped_values($schema->get_table('test', 'data')),
+   [
+      {
+         cols  => { data_report => 'id' },
+         tbl   => $data_report_tbl,
+         where => 'last_insert_id',
+      },
+      '?',
+      {
+         cols  => { entity => 'id' },
+         tbl   => $entity_tbl,
+         where => 'last_insert_id',
+      },
+      '?',
+      '?',
+   ],
+   "Mapped values with fk fetch backs"
 );
 
 # #############################################################################

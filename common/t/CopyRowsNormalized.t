@@ -87,8 +87,8 @@ sub make_copier {
    1 while(defined $schema_itr->next_schema_object());
 
    my $column_map = new ColumnMap(
-      tbl    => $schema->get_table($args{src_db}, $args{src_tbl}),
-      Schema => $schema,
+      src_tbl => $schema->get_table($args{src_db}, $args{src_tbl}),
+      Schema  => $schema,
    );
 
    my $src = {
