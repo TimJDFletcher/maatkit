@@ -205,8 +205,14 @@ sub _copy_rows_in_chunk {
 
    MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
    MKDEBUG && _d($sth->{Statement});
-   print $sth->{Statement}, "\n" if $print;
-   $sth->execute(@params)        if $execute;
+   if ( $print ) {
+      print $sth->{Statement}, "\n" if $print;
+      print "-- Bind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @params);
+   }
+   if ( $execute ) {
+      $sth->execute(@params);
+   }
 
    MKDEBUG && _d('Got', $sth->rows(), 'rows');
    return unless $sth->rows();
@@ -214,9 +220,13 @@ sub _copy_rows_in_chunk {
    # START TRANSACTION
    if ( $self->{start_txn_sth} ) {
       MKDEBUG && _d($self->{start_txn_sth}->{Statement});
-      print $self->{start_txn_sth}->{Statement}, "\n" if $print;
-      $self->{start_txn_sth}->execute()               if $execute;
-      $stats->{start_transaction}++ if $stats;
+      if ( $print ) {
+         print $self->{start_txn_sth}->{Statement}, "\n";
+      }
+      if ( $execute ) {
+         $self->{start_txn_sth}->execute();
+         $stats->{start_transaction}++ if $stats;
+      }
    }
 
    # Fetch and INSERT rows into destination tables.
@@ -235,10 +245,15 @@ sub _copy_rows_in_chunk {
 
          my $insert = $dst_tbl->{insert};
          MKDEBUG && _d($insert->{sth}->{Statement});
-         print $insert->{sth}->{Statement}, "\n" if $print;
-         $insert->{sth}->execute(@$values)       if $execute;
-
-         $stats->{rows_inserted}++ if $stats;
+         if ( $print ) {
+            print $insert->{sth}->{Statement}, "\n";
+            print "-- Bind values: "
+               . join(', ', map { defined $_ ? $_ : 'NULL' } @$values);
+         }
+         if ( $execute ) {
+            $insert->{sth}->execute(@$values);
+            $stats->{rows_inserted}++ if $stats;
+         }
 
          if ( my $last_insert_id = $insert->{last_insert_id} ) {
             $dst_tbl->{last_insert_id} = $last_insert_id->(
@@ -257,9 +272,13 @@ sub _copy_rows_in_chunk {
    # COMMIT
    if ( $self->{commit_sth} ) {
       MKDEBUG && _d($self->{commit_sth}->{Statement});
-      print $self->{commit_sth}->{Statement} if $print;
-      $self->{commit_sth}->execute()         if $execute;
-      $stats->{commit}++ if $stats;
+      if ( $print ) {
+         print $self->{commit_sth}->{Statement}, "\n";
+      }
+      if ( $execute ) {
+         $self->{commit_sth}->execute();
+         $stats->{commit}++ if $stats;
+      }
    }
 
    return $last_row;
