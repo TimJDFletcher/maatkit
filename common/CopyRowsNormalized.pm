@@ -95,7 +95,7 @@ sub new {
    # for example, a column maps to 2 or more tables.
    foreach my $sql ( $first_sql, $next_sql ) {
       $sql .= " LIMIT $txn_size";
-      print '-- ', $sql, "\n" if $self->{print};
+      print '-- ', $sql, "\n" if $args{print};
    }
 
    MKDEBUG && _d('First chunk:', $first_sql);
@@ -121,7 +121,7 @@ sub new {
                     . "*/";
 
       MKDEBUG && _d($sql);
-      print '-- ', $sql, "\n" if $self->{print};
+      print '-- ', $sql, "\n" if $args{print};
       my $sth = $dst->{dbh}->prepare($sql);
       $dst_tbl->{insert} = { sth => $sth, cols => $cols };
 
