@@ -53,6 +53,7 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #
 # Optional Arguments:
 #   constant_values - Hashref of constant values, keyed on column name.
+#   print           - Print column map.
 #
 # Returns:
 #   ColumnMap object
@@ -129,6 +130,10 @@ sub _map {
          MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
             'maps to constant value', $val);
          $dst_tbl->{value_for}->{$src_col} = $val;
+         if ( $args{print} ) {
+            print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
+                . "maps to constant value $val\n";
+         }
       }
       else {
          MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
@@ -137,6 +142,11 @@ sub _map {
          # We don't need to set $dst_tbl->{value_for} in this case because
          # the value will come from same column name in the source table
          # which will be $row->{$src_col} in map_values().
+         if ( $args{print} ) {
+            print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
+                . "maps to column "
+                . "$dst_tbl->{db}, $dst_tbl->{tbl}, $src_col\n";
+         }
       }
 
       # If the dest table has any fk columns, we must map them all to
@@ -206,7 +216,11 @@ sub _map_fk_columns {
          MKDEBUG && _d($tbl->{db}, $tbl->{tbl}, $fk_col, 'maps to',
             $parent_tbl->{db}, $parent_tbl->{tbl}, $parent_col);
          $parent_col_for{$fk_col} = $parent_col;
-
+         if ( $args{print} ) {
+            print "-- Foreign key column $tbl->{db}.$tbl->{tbl}.$fk_col "
+                . "maps to column "
+                . "$parent_tbl->{db}.$parent_tbl->{tbl}.$parent_col\n";
+         }
       }
 
       # Fetching parent table column values for fk constraints is like any
@@ -243,6 +257,7 @@ sub _fetch_row {
    MKDEBUG && _d($sth->{Statement});
 
    my @params = $where ? map { $where->{$_} } sort keys %$where : ();
+   print $sth->{Statement}, "\n" if $self->{print};
    $sth->execute(@params);
 
    my $row = $sth->fetchrow_hashref();

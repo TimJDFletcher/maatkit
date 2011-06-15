@@ -51,6 +51,8 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   asc_only   - Ascend with > instead of >= (default true).
 #   txn_size   - COMMIT after inserting this many rows in each dst table
 #                (default 1)
+#   print      - Print SQL statements.
+#   execute    - Execute SQL statements.
 #
 # Returns:
 #   CopyRowsNormalized object
@@ -93,6 +95,7 @@ sub new {
    # for example, a column maps to 2 or more tables.
    foreach my $sql ( $first_sql, $next_sql ) {
       $sql .= " LIMIT $txn_size";
+      print '-- ', $sql, "\n" if $self->{print};
    }
 
    MKDEBUG && _d('First chunk:', $first_sql);
@@ -118,6 +121,7 @@ sub new {
                     . "*/";
 
       MKDEBUG && _d($sql);
+      print '-- ', $sql, "\n" if $self->{print};
       my $sth = $dst->{dbh}->prepare($sql);
       $dst_tbl->{insert} = { sth => $sth, cols => $cols };
 
@@ -193,13 +197,16 @@ sub _copy_rows_in_chunk {
    my $dst_dbh    = $self->{dst}->{dbh};
    my $dst_tbls   = $self->{dst}->{tbls};
    my $stats      = $self->{stats};
+   my $print      = $self->{print};
+   my $execute    = $self->{execute};
 
    $self->{chunkno}++;   
    $stats->{chunks}++ if $stats;
 
    MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
    MKDEBUG && _d($sth->{Statement});
-   $sth->execute(@params);
+   print $sth->{Statement}, "\n" if $print;
+   $sth->execute(@params)        if $execute;
 
    MKDEBUG && _d('Got', $sth->rows(), 'rows');
    return unless $sth->rows();
@@ -207,7 +214,8 @@ sub _copy_rows_in_chunk {
    # START TRANSACTION
    if ( $self->{start_txn_sth} ) {
       MKDEBUG && _d($self->{start_txn_sth}->{Statement});
-      $self->{start_txn_sth}->execute();
+      print $self->{start_txn_sth}->{Statement}, "\n" if $print;
+      $self->{start_txn_sth}->execute()               if $execute;
       $stats->{start_transaction}++ if $stats;
    }
 
@@ -227,7 +235,8 @@ sub _copy_rows_in_chunk {
 
          my $insert = $dst_tbl->{insert};
          MKDEBUG && _d($insert->{sth}->{Statement});
-         $insert->{sth}->execute(@$values);
+         print $insert->{sth}->{Statement}, "\n" if $print;
+         $insert->{sth}->execute(@$values)       if $execute;
 
          $stats->{rows_inserted}++ if $stats;
 
@@ -248,7 +257,8 @@ sub _copy_rows_in_chunk {
    # COMMIT
    if ( $self->{commit_sth} ) {
       MKDEBUG && _d($self->{commit_sth}->{Statement});
-      $self->{commit_sth}->execute();
+      print $self->{commit_sth}->{Statement} if $print;
+      $self->{commit_sth}->execute()         if $execute;
       $stats->{commit}++ if $stats;
    }
 

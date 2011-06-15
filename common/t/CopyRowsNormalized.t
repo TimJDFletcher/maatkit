@@ -118,6 +118,8 @@ sub make_copier {
       stats        => $stats,
       txn_size     => $args{txn_size} || 1,
       foreign_keys => $args{foreign_keys},
+      execute      => defined $args{execute} ? $args{execute} : 1,
+      print        => $args{print},
    );
 
    return $copy_rows;
