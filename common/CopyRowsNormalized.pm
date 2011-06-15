@@ -208,7 +208,8 @@ sub _copy_rows_in_chunk {
    if ( $print ) {
       print $sth->{Statement}, "\n" if $print;
       print "-- Bind values: "
-         . join(', ', map { defined $_ ? $_ : 'NULL' } @params);
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @params)
+         . "\n";
    }
    if ( $execute ) {
       $sth->execute(@params);
@@ -248,7 +249,8 @@ sub _copy_rows_in_chunk {
          if ( $print ) {
             print $insert->{sth}->{Statement}, "\n";
             print "-- Bind values: "
-               . join(', ', map { defined $_ ? $_ : 'NULL' } @$values);
+               . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
+               . "\n";
          }
          if ( $execute ) {
             $insert->{sth}->execute(@$values);
