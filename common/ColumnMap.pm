@@ -145,7 +145,7 @@ sub _map {
          if ( $args{print} ) {
             print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
                 . "maps to column "
-                . "$dst_tbl->{db}, $dst_tbl->{tbl}, $src_col\n";
+                . "$dst_tbl->{db}.$dst_tbl->{tbl}.$src_col\n";
          }
       }
 
