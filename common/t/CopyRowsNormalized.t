@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 16;
+   plan tests => 22;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -87,8 +87,9 @@ sub make_copier {
    1 while(defined $schema_itr->next_schema_object());
 
    my $column_map = new ColumnMap(
-      src_tbl => $schema->get_table($args{src_db}, $args{src_tbl}),
-      Schema  => $schema,
+      src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
+      Schema          => $schema,
+      constant_values => $args{constant_values},
    );
 
    my $src = {
@@ -263,15 +264,84 @@ $copy_rows = make_copier(
    foreign_keys => 1,
    src_db       => 'test',
    src_tbl      => 'raw_data',
+   txn_size     => 3,
    dst_tbls     => [
       ['test', 'data_report'], # child2
       ['test', 'entity'     ], # child1
       ['test', 'data'       ], # parent
    ],
+   constant_values => {
+      posted   => '2011-06-15',
+      acquired => '2011-06-14',
+   },
 );
 
-# Work in progres...
+$rows = $dbh->selectall_arrayref('select * from data_report, entity, data');
+is_deeply(
+   $rows,
+   [],
+   'Dest tables data_report, entity, and data are empty'
+);
+
+$rows = $dbh->selectall_arrayref('select * from raw_data order by date');
+is_deeply(
+   $rows,
+   [
+      ['2011-06-01', 101, 'ep1-1', 'ep2-1', 'd1-1', 'd2-1'],
+      ['2011-06-02', 102, 'ep1-2', 'ep2-2', 'd1-2', 'd2-2'],
+      ['2011-06-03', 103, 'ep1-3', 'ep2-3', 'd1-3', 'd2-3'],
+      ['2011-06-04', 104, 'ep1-4', 'ep2-4', 'd1-4', 'd2-4'],
+      ['2011-06-05', 105, 'ep1-5', 'ep2-5', 'd1-5', 'd2-5'],
+   ],
+   'Source table raw_data has data'
+);
+
 $copy_rows->copy();
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from raw_data order by date'),
+   $rows,
+   "Source table not modified"
+);
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', '2011-06-15 00:00:00', '2011-06-14 00:00:00'],
+      [2, '2011-06-02', '2011-06-15 00:00:00', '2011-06-14 00:00:00'],
+      [3, '2011-06-03', '2011-06-15 00:00:00', '2011-06-14 00:00:00'],
+      [4, '2011-06-04', '2011-06-15 00:00:00', '2011-06-14 00:00:00'],
+      [5, '2011-06-05', '2011-06-15 00:00:00', '2011-06-14 00:00:00'],
+   ],
+   'data_report rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 'ep1-1', 'ep2-1'],
+      [2, 'ep1-2', 'ep2-2'],
+      [3, 'ep1-3', 'ep2-3'],
+      [4, 'ep1-4', 'ep2-4'],
+      [5, 'ep1-5', 'ep2-5'],
+   ],
+   'entity rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 101, 1, 'd1-1', 'd2-1'],
+      [2, 102, 2, 'd1-2', 'd2-2'],
+      [3, 103, 3, 'd1-3', 'd2-3'],
+      [4, 104, 4, 'd1-4', 'd2-4'],
+      [5, 105, 5, 'd1-5', 'd2-5'],
+   ],
+   'data row'
+);
 
 # #############################################################################
 # Done.
@@ -287,5 +357,5 @@ like(
    qr/Complete test coverage/,
    '_d() works'
 );
-#$sb->wipe_clean($dbh);
+$sb->wipe_clean($dbh);
 exit;

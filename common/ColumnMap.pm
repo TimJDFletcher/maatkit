@@ -21,14 +21,13 @@
 # Package: ColumnMap
 # ColumnMap maps columns from one table to other tables.  A column map helps
 # decompose a table into serveral other tables (for example, normalizing a
-# denormalized table).  For all columns in the given table, the given <Schema>
-# is searched for other tables with identical column names.  It's possible
-# for a single column to map to multiple columns in different tables.
+# denormalized table).  For all columns in the given source table, the given
+# <Schema> is searched for other tables with identical column names.  It's
+# possible for a single column to map to multiple columns in different tables.
 #
-# A column map is used by selecting mapped columns from the table, then
-# inserting columns mapped to the other tables using the mapped column values
-# selected.  See the test file or mk-insert-normalized and its test for
-# examples.
+# A column map is used by selecting mapped columns from the source table, then
+# inserting mapped columns into the destination tables using mapped values.
+# See the test file or mk-insert-normalized and its test for examples.
 package ColumnMap;
 
 { # package scope
@@ -51,6 +50,9 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 # Required Arguments:
 #   src_tbl - <Schema::get_table()> to map columns from.
 #   Schema  - <Schema> object with tables to map tbl columns to.
+#
+# Optional Arguments:
+#   constant_values - Hashref of constant values, keyed on column name.
 #
 # Returns:
 #   ColumnMap object
@@ -81,48 +83,74 @@ sub _map_columns {
    die "No database or table" unless $src_tbl->{db} && $src_tbl->{tbl};
    die "No table structure"   unless $src_tbl->{tbl_struct};
 
-   my %mapped_dst_tbls;
-   SOURCE_COLUMN:
    foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
       MKDEBUG && _d('Mapping column', $src_col);
+      _map(%args, src_col => $src_col);
+   }
 
-      # First see if the column maps directly, src_tbl.colX -> dst_tbl.colX.
-      # One source column can map to multiple destination tables.
-      my $dst_tbls = $schema->find_column(
-         col    => $src_col,
-         ignore => [ $src_tbl ],
-      );
-      if ( $dst_tbls && @$dst_tbls ) {
-         foreach my $dst_tbl ( @$dst_tbls ) {
-            MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col, 'maps to',
-               $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
-
-            # Source col maps to dest col with the same name.  Hopefully this
-            # dest column is only mapped to once, else that's a problem that
-            # we don't detect yet.  A hash is used to maintain a unique list.
-            $dst_tbl->{mapped_columns}->{$src_col}++;
-
-            # If the dest table has any fk columns, we must map them all to
-            # satisfy the fk contraints.
-            if ( $dst_tbl->{fk_struct} ) {
-               _map_fk_columns(%args, tbl => $dst_tbl);
-            } 
-
-            # Remember which dest tables we've mapped to.  We probably map
-            # to a given dest table multiple times.
-            $mapped_dst_tbls{$dst_tbl}++;
-         }
-
-         # This source column has been mapped.  It may be mapped multiple times.
-         # A hash is used to maintain a unique list.
-         $src_tbl->{mapped_columns}->{$src_col}++;
-      }
-      else {
-         MKDEBUG && _d('Column', $src_col, 'does not map');
+   if ( my $const_vals = $args{constant_values} ) {
+      foreach my $const_col ( keys %$const_vals ) {
+         MKDEBUG && _d('Mapping constant column', $const_col);
+         _map(%args, src_col => $const_col, val => $const_vals->{$const_col});
       }
    }
 
-   return \%mapped_dst_tbls;
+   return;
+}
+
+sub _map {
+   my ( %args ) = @_;
+   my @required_args = qw(src_tbl src_col Schema);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($src_tbl, $src_col, $schema) = @args{@required_args};
+   my $val = $args{val};
+
+   # See if the column maps directly, src_tbl.colX -> dst_tbl.colX.
+   # One source column can map to multiple destination tables.
+   my $dst_tbls = $schema->find_column(
+      col    => $src_col,
+      ignore => [ $src_tbl ],
+   );
+
+   if ( !$dst_tbls || !@$dst_tbls ) {
+      MKDEBUG && _d('Column', $src_col, 'does not map');
+      return;
+   }
+
+   foreach my $dst_tbl ( @$dst_tbls ) {
+      # Source col maps to dest col with the same name.  Hopefully this
+      # dest column is only mapped to once, else that's a problem that
+      # we don't detect yet.  A hash is used to maintain a unique list.
+      $dst_tbl->{mapped_columns}->{$src_col}++;
+
+      if ( defined $val ) {
+         MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+            'maps to constant value', $val);
+         $dst_tbl->{value_for}->{$src_col} = $val;
+      }
+      else {
+         MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+            'maps to value from',
+            $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
+         # We don't need to set $dst_tbl->{value_for} in this case because
+         # the value will come from same column name in the source table
+         # which will be $row->{$src_col} in map_values().
+      }
+
+      # If the dest table has any fk columns, we must map them all to
+      # satisfy the fk contraints.
+      if ( $dst_tbl->{fk_struct} ) {
+         _map_fk_columns(%args, tbl => $dst_tbl);
+      } 
+   }
+
+   # This source column has been mapped.  It may be mapped multiple times.
+   # A hash is used to maintain a unique list.
+   $src_tbl->{mapped_columns}->{$src_col}++;
+
+   return;
 }
 
 sub _map_fk_columns {

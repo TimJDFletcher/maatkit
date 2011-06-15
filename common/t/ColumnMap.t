@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 6;
+use Test::More tests => 7;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -75,16 +75,21 @@ sub make_column_map {
    1 while(defined $schema_itr->next_schema_object());
 
    $column_map = new ColumnMap(
-      src_tbl => $schema->get_table($args{src_db}, $args{src_tbl}),
-      Schema  => $schema,
+      src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
+      Schema          => $schema,
+      constant_values => $args{constant_values},
    );
 }
 
 make_column_map(
-   files        => ["$in/dump002.txt"],
-   src_db       => 'test',
-   src_tbl      => 'raw_data',
-   foreign_keys => 1,
+   files           => ["$in/dump002.txt"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data',
+   foreign_keys    => 1,
+   constant_values => {
+      posted   => 'NOW()',
+      acquired => '',
+   },
 );
 
 is_deeply(
@@ -95,7 +100,7 @@ is_deeply(
 
 is_deeply(
    $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(date)],
+   [qw(date posted acquired)],
    "Map dest table columns, data_report"
 );
 
@@ -131,6 +136,16 @@ is_deeply(
       '?',
    ],
    "Mapped values with fk fetch backs"
+);
+
+is_deeply(
+   $column_map->mapped_values($schema->get_table('test', 'data_report')),
+   [
+      '?',      # date, from raw_data.date
+      'NOW()',  # posted, from constant value
+      '?',      # acquired, from constant value
+   ],
+   "Mapped constant values"
 );
 
 # #############################################################################

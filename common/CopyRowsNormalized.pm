@@ -124,7 +124,7 @@ sub new {
       if ( $args{foreign_keys} ) {
          $dst_tbl->{insert}->{last_insert_id} = _make_last_insert_id_callback(
             tbl  => $dst_tbl,
-            cols => { map { $_ => 1 } $cols },
+            cols => { map { $_ => 1 } @$cols },
             %args
          );
       }
@@ -268,7 +268,8 @@ sub _make_last_insert_id_callback {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($tbl, $cols) = @args{@required_args};
-   MKDEBUG && _d('Making callback to get last insert id');
+   MKDEBUG && _d('Making callback to get last insert id from table',
+      $tbl->{tbl}, $tbl->{tbl});
 
    my $tbl_pk = $tbl->{tbl_struct}->{keys}->{PRIMARY};
    my ($auto_inc_col)
@@ -302,10 +303,13 @@ sub _make_last_insert_id_callback {
    else {
       my @need_pk_cols = grep { !$cols->{$_} } @{$tbl_pk->{cols}};
       if ( @need_pk_cols ) {
-         warn "Cannot get last insert ID for table $tbl->{tbl}.$tbl->{db} "
+         # This probably signals that the column map isn't complete,
+         # i.e. there's some dst col that isn't mapped which is needed
+         # to get the last insert id.
+         warn "Cannot get last insert ID for table $tbl->{db}.$tbl->{tbl} "
             . "because primary key columns "
             . join(', ', map { $need_pk_cols[$_] } 0..($#need_pk_cols-1))
-            . " and $need_pk_cols[-1] "
+            . ", and $need_pk_cols[-1] "
             . "are not selected and no AUTO_INCREMENT column exists";
       }
       else {

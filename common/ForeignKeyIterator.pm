@@ -131,6 +131,10 @@ sub _get_fk_refs {
    while ( my $obj = $schema_itr->next_schema_object() ) {
       my ($db, $tbl) = @{$obj}{qw(db tbl)};
 
+      if ( !$db || !$tbl ) {
+         die "No database or table name for schema object";
+      }
+
       if ( !$obj->{ddl} ) {
          # If the SchemaIterator obj was created with a dbh, this probably
          # means that it was not also created with a MySQLDump obj.
@@ -148,8 +152,13 @@ sub _get_fk_refs {
          MKDEBUG && _d('Table', $db, $tbl, 'has foreign keys');
          $obj->{fk_struct} = $fks;
          foreach my $fk ( values %$fks ) {
-            my ($fk_db, $fk_tbl) = $q->split_unquote($fk->{parent_tbl});
-            push @{$obj->{references}}, [$fk_db, $fk_tbl];
+            my ($parent_db, $parent_tbl) = @{$fk->{parent_tbl}}{qw(db tbl)};
+            if ( !$parent_db ) {
+               MKDEBUG && _d('No fk parent table database,',
+                  'assuming child table database', $tbl->{db});
+               $parent_db = $tbl->{db};
+            }
+            push @{$obj->{references}}, [$parent_db, $parent_tbl];
          }
       }
    }
