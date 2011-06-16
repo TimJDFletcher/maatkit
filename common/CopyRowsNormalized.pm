@@ -53,6 +53,8 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #                (default 1)
 #   print      - Print SQL statements.
 #   execute    - Execute SQL statements.
+#   replace    - REPLACE instead of INSERT.
+#   ignore     - INSERT IGNORE.
 #
 # Returns:
 #   CopyRowsNormalized object
@@ -108,7 +110,9 @@ sub new {
    # which values from the source should be inserted into the given dest.
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
       my $cols = $column_map->mapped_columns($dst_tbl);
-      my $sql  = "INSERT INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+      my $sql  = ($args{replace} ? 'REPLACE' : 'INSERT')
+               . ($args{ignore}  ? ' IGNORE' : '')
+               . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
                . ' (' . join(', ', @$cols) . ')'
                . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
 
@@ -238,6 +242,7 @@ sub _copy_rows_in_chunk {
       $stats->{rows_selected}++ if $stats;
       INSERT:
       foreach my $dst_tbl ( @$dst_tbls ) {
+         MKDEBUG && _d('Inserting row into', $dst_tbl->{db}, $dst_tbl->{tbl});
          my $values = $column_map->map_values(
             dbh => $dst_dbh,
             tbl => $dst_tbl,

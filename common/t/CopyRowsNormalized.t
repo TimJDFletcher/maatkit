@@ -39,11 +39,12 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 22;
+   plan tests => 29;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
 my $output = '';
+my $in     = "common/t/samples/CopyRowsNormalized/";
 
 my $q  = new Quoter;
 my $tp = new TableParser(Quoter => $q);
@@ -120,6 +121,8 @@ sub make_copier {
       foreign_keys => $args{foreign_keys},
       execute      => defined $args{execute} ? $args{execute} : 1,
       print        => $args{print},
+      replace      => $args{replace},
+      ignore       => $args{ignore},
    );
 
    return $copy_rows;
@@ -202,7 +205,7 @@ is(
 # Copying table a rows to 2 tables: b and c.  a.id doesn't map, so b.b_id
 # and c.c_id should auto-inc.  There should be more inserts than fetched rows.
 # ###########################################################################
-$sb->load_file("master", "common/t/samples/CopyRowsNormalized/tbls001.sql");
+$sb->load_file("master", "$in/tbls001.sql");
 @ARGV = qw(-d test);
 $o->get_opts();
 $copy_rows = make_copier(
@@ -342,7 +345,123 @@ is_deeply(
       [4, 104, 4, 'd1-4', 'd2-4'],
       [5, 105, 5, 'd1-5', 'd2-5'],
    ],
-   'data row'
+   'data rows'
+);
+
+
+# ############################################################################
+# 
+# ############################################################################
+$dbh->do('drop database if exists test');
+$dbh->do('create database test');
+$sb->load_file("master", "$in/tbls002.sql", "test");
+@ARGV = qw(-d test);
+$o->get_opts();
+$copy_rows = make_copier(
+   ignore       => 1,
+   foreign_keys => 1,
+   src_db       => 'test',
+   src_tbl      => 'denorm_address',
+   txn_size     => 5,
+   dst_tbls     => [
+      ['test', 'country'],
+      ['test', 'city'   ],
+      ['test', 'address'], # parent
+   ],
+);
+
+$rows = $dbh->selectall_arrayref('select * from address, city, country');
+is_deeply(
+   $rows,
+   [],
+   'Dest tables address, city, and country are empty'
+);
+
+$rows = $dbh->selectall_arrayref('select * from denorm_address order by address_id');
+is_deeply(
+   $rows,
+   [
+      [1,  '47 MySakila Drive',    300, 'Lethbridge',      20, 'Canada'],
+      [2,  '28 MySQL Boulevard',   576, 'Woodridge',        8, 'Australia'],
+      [3,  '23 Workhaven Lane',    300, 'Lethbridge',      20, 'Canada'],
+      [4,  '1411 Lillydale Drive', 576, 'Woodridge',        8, 'Australia'],
+      [5,  '1913 Hanoi Way',       463, 'Sasebo',          50, 'Japan'],
+      [6,  '1121 Loja Avenue',     449, 'San Bernardino', 103, 'United States'],
+      [7,  '692 Joliet Street',     38, 'Athenai',         39, 'Greece'],
+      [8,  '1566 Inegl Manor',     349, 'Myingyan',        64, 'Myanmar'],
+      [9,  '53 Idfu Parkway',      361, 'Nantou',          92, 'Taiwan'],
+      [10, '1795 Santiago Way',    295, 'Laredo',         103, 'United States'],
+   ],
+   'Source table denorm_address has data'
+);
+
+$copy_rows->copy();
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from denorm_address order by address_id'),
+   $rows,
+   "Source table not modified"
+);
+
+$rows = $dbh->selectall_arrayref('select * from country order by country_id');
+is_deeply(
+   $rows,
+   [
+      [8,   'Australia'],
+#     [8,   'Australia'],
+      [20,  'Canada'],
+#     [20,  'Canada'],
+      [39,  'Greece'],
+      [50,  'Japan'],
+      [64,  'Myanmar'],
+      [92,  'Taiwan'],
+      [103, 'United States'],
+#     [103, 'United States'],
+   ],
+   'country rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from city order by city_id');
+is_deeply(
+   $rows,
+   [
+      [38,  'Athenai',        39],
+      [295, 'Laredo',         103],
+      [300, 'Lethbridge',     20],
+#     [300, 'Lethbridge',     20],
+      [349, 'Myingyan',       64],
+      [361, 'Nantou',         92],
+      [449, 'San Bernardino', 103],
+      [463, 'Sasebo',         50],
+      [576, 'Woodridge',      8],
+#     [576, 'Woodridge',      8],
+   ],
+   'city rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from address order by address_id');
+is_deeply(
+   $rows,
+   [
+      [1,  '47 MySakila Drive',     300],
+      [2,  '28 MySQL Boulevard',    576],
+      [3,  '23 Workhaven Lane',     300],
+      [4,  '1411 Lillydale Drive',  576],
+      [5,  '1913 Hanoi Way',        463],
+      [6,  '1121 Loja Avenue',      449],
+      [7,  '692 Joliet Street',      38],
+      [8,  '1566 Inegl Manor',      349],
+      [9,  '53 Idfu Parkway',       361],
+      [10, '1795 Santiago Way',     295],
+   ],
+   'address rows'
+);
+$rows = $dbh->selectall_arrayref('select * from denorm_address order by address_id');
+my $rows2 = $dbh->selectall_arrayref('select address.address_id, address, city.city_id, city, country.country_id, country from address left join city using (city_id) left join country using (country_id) order by address.address_id');
+is_deeply(
+   $rows,
+   $rows2,
+   "Normalized rows match denormalized rows"
 );
 
 # #############################################################################
