@@ -65,6 +65,10 @@ ok(
          '--constant-values', "$trunk/mk-insert-normalized/t/samples/raw-data-const-vals.txt",
          qw(--print --execute)) },
       "$out/raw-data.txt",
+      sed => [
+         "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
+         "-e 's/user:[a-z]*/user:test/g' -i.bak",
+      ],
    ),
    "Normalize raw_data"
 );
