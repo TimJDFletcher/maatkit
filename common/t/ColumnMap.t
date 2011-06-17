@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 7;
+use Test::More tests => 10;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -78,6 +78,7 @@ sub make_column_map {
       src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
       Schema          => $schema,
       constant_values => $args{constant_values},
+      ignore_columns  => $args{ignore_columns},
    );
 }
 
@@ -146,6 +147,43 @@ is_deeply(
       '?',      # acquired, from constant value
    ],
    "Mapped constant values"
+);
+
+# ############################################################################
+# Ignore columns, i.e. don't map them.
+# ############################################################################
+make_column_map(
+   files           => ["$in/dump002.txt"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data',
+   foreign_keys    => 1,
+   constant_values => {
+      posted   => 'NOW()',
+      acquired => '',
+   },
+   ignore_columns  => { date => 1 },
+);
+
+# Unlike similar tests above, date is no longer mapped.
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'raw_data')),
+   [qw(hour entity_property_1 entity_property_2 data_1 data_2)],
+   "Ignored column not mapped from source table"
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
+   [qw(posted acquired)],
+   "Ignored column not mapped to dest table"
+);
+
+is_deeply(
+   $column_map->mapped_values($schema->get_table('test', 'data_report')),
+   [
+      'NOW()',  # posted, from constant value
+      '?',      # acquired, from constant value
+   ],
+   "No value placeholder for ignored column"
 );
 
 # #############################################################################

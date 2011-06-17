@@ -52,6 +52,8 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   Schema  - <Schema> object with tables to map tbl columns to.
 #
 # Optional Arguments:
+#   ignore_columns  - Hashref of src_tbl columns to ignore (not mapped),
+#                     keyed on column name with any true value.
 #   constant_values - Hashref of constant values, keyed on column name.
 #   print           - Print column map.
 #
@@ -64,7 +66,27 @@ sub new {
       die "I need a $arg argument" unless $args{$arg};
    }
 
-   _map_columns(%args);
+   my $src_tbl    = $args{src_tbl};
+   my $ignore_col = $args{ignore_columns};
+   foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
+      if ( $ignore_col->{$src_col} ) {
+         MKDEBUG && _d('Not mapping ignored column', $src_col);
+         next;
+      }
+      MKDEBUG && _d('Mapping column', $src_col);
+      _map_column(%args, src_col => $src_col);
+   }
+
+   if ( my $const_vals = $args{constant_values} ) {
+      foreach my $const_col ( keys %$const_vals ) {
+         MKDEBUG && _d('Mapping constant column', $const_col);
+         _map_column(
+            %args,
+            src_col => $const_col,
+            val     => $const_vals->{$const_col},
+         );
+      }
+   }
 
    my $self = {
       %args,
@@ -73,33 +95,7 @@ sub new {
    return bless $self, $class;
 }
 
-sub _map_columns {
-   my ( %args ) = @_;
-   my @required_args = qw(src_tbl Schema);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($src_tbl, $schema) = @args{@required_args};
-
-   die "No database or table" unless $src_tbl->{db} && $src_tbl->{tbl};
-   die "No table structure"   unless $src_tbl->{tbl_struct};
-
-   foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
-      MKDEBUG && _d('Mapping column', $src_col);
-      _map(%args, src_col => $src_col);
-   }
-
-   if ( my $const_vals = $args{constant_values} ) {
-      foreach my $const_col ( keys %$const_vals ) {
-         MKDEBUG && _d('Mapping constant column', $const_col);
-         _map(%args, src_col => $const_col, val => $const_vals->{$const_col});
-      }
-   }
-
-   return;
-}
-
-sub _map {
+sub _map_column {
    my ( %args ) = @_;
    my @required_args = qw(src_tbl src_col Schema);
    foreach my $arg ( @required_args ) {
