@@ -3334,7 +3334,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7561
+# ColumnMap package 7563
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3363,7 +3363,27 @@ sub new {
       die "I need a $arg argument" unless $args{$arg};
    }
 
-   _map_columns(%args);
+   my $src_tbl    = $args{src_tbl};
+   my $ignore_col = $args{ignore_columns};
+   foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
+      if ( $ignore_col->{$src_col} ) {
+         MKDEBUG && _d('Not mapping ignored column', $src_col);
+         next;
+      }
+      MKDEBUG && _d('Mapping column', $src_col);
+      _map_column(%args, src_col => $src_col);
+   }
+
+   if ( my $const_vals = $args{constant_values} ) {
+      foreach my $const_col ( keys %$const_vals ) {
+         MKDEBUG && _d('Mapping constant column', $const_col);
+         _map_column(
+            %args,
+            src_col => $const_col,
+            val     => $const_vals->{$const_col},
+         );
+      }
+   }
 
    my $self = {
       %args,
@@ -3372,33 +3392,7 @@ sub new {
    return bless $self, $class;
 }
 
-sub _map_columns {
-   my ( %args ) = @_;
-   my @required_args = qw(src_tbl Schema);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($src_tbl, $schema) = @args{@required_args};
-
-   die "No database or table" unless $src_tbl->{db} && $src_tbl->{tbl};
-   die "No table structure"   unless $src_tbl->{tbl_struct};
-
-   foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
-      MKDEBUG && _d('Mapping column', $src_col);
-      _map(%args, src_col => $src_col);
-   }
-
-   if ( my $const_vals = $args{constant_values} ) {
-      foreach my $const_col ( keys %$const_vals ) {
-         MKDEBUG && _d('Mapping constant column', $const_col);
-         _map(%args, src_col => $const_col, val => $const_vals->{$const_col});
-      }
-   }
-
-   return;
-}
-
-sub _map {
+sub _map_column {
    my ( %args ) = @_;
    my @required_args = qw(src_tbl src_col Schema);
    foreach my $arg ( @required_args ) {
@@ -4133,9 +4127,11 @@ sub main {
       reverse        => 1,    # insert into child tables then parent db.tbl
    );
 
+   print "-- INSERT table order:\n" if $o->get('print');
    my @dst_tbls;
    while ( my $dst_tbl = $fk_itr->next_schema_object() ) {
       push @dst_tbls, $dst_tbl;
+      print "--   $dst_tbl->{db}.$dst_tbl->{tbl}\n" if $o->get('print');
    }
    my $dst = {
       dbh  => $dst_dbh,
@@ -4152,8 +4148,8 @@ sub main {
       src_tbl         => $schema->get_table($src_dsn->{D}, $src_dsn->{t}),
       Schema          => $schema,
       constant_values => $constant_values,
+      ignore_columns  => $o->get('ignore-columns'),
       print           => $o->get('print'),
-      execute         => $o->get('execute'),
    );
    foreach my $dst_tbl ( @dst_tbls ) {
       if (    !$column_map->mapped_columns($dst_tbl)
@@ -4255,7 +4251,6 @@ Insert data from C<denorm_tbl> into C<norm_tbl> and its child tables:
     --source    h=localhost,D=test,t=denorm_tbl \
     --dest      h=hostlocal,D=test,t=norm_tbl   \
     --databases test                            \
-    --txn-size  1000                            \
     --print                                     \
     --execute
 
@@ -4319,8 +4314,8 @@ and the normalized destination tables are,
      PRIMARY KEY (item_id),
      KEY type_id (type_id),
      KEY color_id (color_id),
-     FOREIGN KEY (type_id) REFERENCES types (type_id) ON UPDATE CASCADE,
-     FOREIGN KEY (color_id) REFERENCES colors (color_id) ON UPDATE CASCADE
+     FOREIGN KEY (type_id) REFERENCES types (type_id),
+     FOREIGN KEY (color_id) REFERENCES colors (color_id)
    ) ENGINE=InnoDB;
 
 then the resulting inserts will be, in order of tables:
@@ -4354,6 +4349,14 @@ There are a lot of cases concerning table structures, foreign key constraints,
 indexes, column types, etc.  This tool tries to do everything automatically,
 but for best results you should consider these technical points.
 
+=head2 SOURCE TABLE CHUNK INDEX
+
+The tool chunks the L<"--source"> table using the L<"--chunk-index">.  By
+default, L<"--[no]ascend-first"> is true which means that only the first
+column in a multi-column chunk index is used.  This is more efficient and
+should work in most cases, but if not, then you need to specify
+C<--no-ascend-first>.
+
 =head2 DUPLICATE KEY VALUES
 
 If the denormalized L<"--source"> table has rows which will result in
@@ -4362,8 +4365,9 @@ then you may need to use L<"--insert-ignore">.
 
 For example, if the denormalized table has addresses,
 
-  1,My Street,1,Montreal,1,Canada
-  2,Your Street,1,Montreal,1,Canada
+   address_id,address,city_id,city,country_id,country
+   1,My Street,1,Montreal,1,Canada
+   2,Your Street,1,Montreal,1,Canada
 
 and the normalized tables are,
 
@@ -4396,16 +4400,31 @@ C<1,Canada> into table C<country> for the second address.  The same will
 happen for inserting row C<1,Montreal> into table C<city>.
 
 The tool does not check to see if a row already exists; it blindly inserts
-everything.  So currently L<"--insert-ignore">, or possible L<"--replace">
+everything.  So currently L<"--insert-ignore">, or possibly L<"--replace">
 if foreign key constraints aren't being used, is the only solution.
 
-=head2 SOURCE TABLE CHUNK INDEX
+=head2 COMPLEX FOREIGN KEY CONSTRAINTS
 
-The tool chunks the L<"--source"> table using the L<"--chunk"> index.  By
-default, L<"--[no]ascend-first"> is true which means that only the first
-column in a multi-column chunk index is used.  This is more efficient and
-should work in most cases, but if not, then you need to specify
-C<--no-ascend-first>.
+The tool can resolve rather complex foreign key constraints, but you may
+want to use L<"--print"> to see the INSERT table order, like:
+
+   -- INSERT table order:
+   --   test.data_report
+   --   test.entity
+   --   test.data
+
+The tool will insert values into C<test.data_report>, then C<test.entity>,
+then C<test.data>.
+
+Circular references are resolvable but not supported.
+
+=head2 MULTI-COLUMN FOREIGN KEYS
+
+Multi-column foreign keys like,
+
+   FOREIGN KEY (fk_col1, fk_col2) REFERENCES parent_table (col1, col2)
+
+work but are not formally tested.
 
 =head2 SCHEMA FILTERS
 
@@ -4413,6 +4432,16 @@ You should probably use the schema filter options L<"--databases"> and
 maybe L<"--tables"> otherwise the tool will try to map columns from the
 L<"--source"> table to any table in any database.  Also, it's more efficient
 to specify only the databases or tables needed.
+
+=head2 TRANSACTION SIZE
+
+The default L<"--txn-size"> is 100 inserts per L<"--dest"> table.  This
+means that if there are 5 L<"--dest"> tables, then each transaction will
+commit 500 rows.  The tool does not delete or alter in any way L<"--source">
+table rows, so the transaction size is more for speed than safety.  If
+copying rows fails, there are no attempts to recover or rollback.  It is
+expect that the user can truncate the L<"--dest"> tables, fix the problem,
+and then try again.
 
 =head1 OPTIONS
 
@@ -4510,10 +4539,10 @@ pathname.
 type: DSN
 
 Normalized destination table (required).  The given DSN requires D (database)
-and t (table) parts that specify the ormalized table into which rows
+and t (table) parts that specify the normalized table into which rows
 will be copied from the denormalized L<"--source"> table.
 
-This table is presumed to have foreign key constraints that refernce other
+This table is presumed to have foreign key constraints that reference other
 tables.  The tool automatically discovers all foreign key references and
 inserts rows into referenced tables first.
 
@@ -4530,6 +4559,15 @@ Show help and exit.
 short form: -h; type: string; default: localhost
 
 Connect to host.
+
+=item --ignore-columns
+
+type: Hash
+
+Ignore this comma-separated list of L<"--source"> table columns.  These
+columns will not be mapped to any L<"--dest"> table.  This is useful if
+all tables have a common column like C<id> that you want to let MySQL
+use a default value for (like NULL for an auto-increment column).
 
 =item --ignore-databases
 
@@ -4623,13 +4661,14 @@ Table names may be qualified with the database name.
 
 =item --txn-size
 
-type: int; default: 1
+type: int; default: 100
 
-Number of rows per transaction.  This number is added to the SELECT statement
-for the L<"--source"> table as a LIMIT clause, like C<SELECT  LIMIT --txn-size>.
-Then a transaction is started before inserting rows into the L<"--dest"> tables.
-After all selected rows have been inserted into all L<"--dest"> tables, the
-transaction is committed.  So the transaction size is for L<"--dest"> table.
+Number of rows per transaction, per L<"--dest"> table.
+This number is added to the SELECT statement for the L<"--source"> table as a
+LIMIT clause, like C<SELECT  LIMIT --txn-size>.  Then a transaction is started
+before inserting rows into the L<"--dest"> tables.  After all selected rows
+have been inserted into all L<"--dest"> tables, the transaction is committed.
+So the transaction size is for each L<"--dest"> table.
 
 For example, if L<"--txn-size">=100 and there are 3 L<"--dest"> tables (two
 child tables and a parent table), and all columns from the L<"--source">

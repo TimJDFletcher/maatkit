@@ -71,7 +71,7 @@ ok(
          '--source', "F=$cnf,D=test,t=raw_data",
          '--dest',   "t=data",
          '--constant-values', "$trunk/mk-insert-normalized/t/samples/raw-data-const-vals.txt",
-         qw(-d test --print --execute)) },
+         qw(-d test --print --execute --txn-size 1)) },
       "$out/raw-data.txt",
       sed => [
          "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
