@@ -3334,7 +3334,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7555
+# ColumnMap package 7561
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3561,10 +3561,12 @@ sub _make_fetch_row_sth {
 
 sub mapped_columns {
    my ( $self, $tbl ) = @_;
-   die "I need a tbl argument"
-      unless $tbl;
-   die "No mapped columns for table $tbl->{db}.$tbl->{tbl}"
-      unless $tbl->{mapped_columns};
+   die "I need a tbl argument" unless $tbl;
+
+   if ( !$tbl->{mapped_columns} ) {
+      MKDEBUG && _d('No columns are mapped to table', $tbl->{db}, $tbl->{tbl});
+      return;
+   }
 
    if ( !$tbl->{mapped_columns_sorted} ) {
       $tbl->{mapped_columns_sorted} = sort_columns(
@@ -3578,6 +3580,8 @@ sub mapped_columns {
 sub mapped_values {
    my ( $self, $tbl ) = @_;
    my $mapped_cols = $self->mapped_columns($tbl);
+   return unless $mapped_cols;
+
    my $value_for   = $tbl->{value_for};
    my @vals        = map { $value_for->{$_} || '?' } @$mapped_cols;
    return \@vals;
@@ -3618,6 +3622,19 @@ sub map_values {
       @$mapped_cols);
 
    return \@values;
+}
+
+sub map_foreign_table {
+   my ( $self, $tbl ) = @_;
+   return unless $tbl;
+   MKDEBUG && _d('Mapping foreign table', $tbl->{db}, $tbl->{tbl});
+   if ( $tbl->{fk_struct} ) {
+      _map_fk_columns(
+         tbl    => $tbl,
+         Schema => $self->{Schema},
+      );
+   } 
+   return $self->mapped_columns($tbl);
 }
 
 sub sort_columns {
@@ -4138,6 +4155,16 @@ sub main {
       print           => $o->get('print'),
       execute         => $o->get('execute'),
    );
+   foreach my $dst_tbl ( @dst_tbls ) {
+      if (    !$column_map->mapped_columns($dst_tbl)
+           && !$column_map->map_foreign_table($dst_tbl) ) {
+         die "No columns in table $src->{tbl}->{db}.$src->{tbl}->{tbl} "
+            . "map to table $dst_tbl->{db}.$dst_tbl->{tbl}.  Either there "
+            . "are not columns with the same name in both tables, or "
+            . "table $dst_tbl->{db}.$dst_tbl->{tbl} does not reference "
+            . "other tables.";
+      }
+   }
 
    my $stats = {};
 
@@ -4260,50 +4287,132 @@ foreign key constraints that reference other tables.  The tool automatically
 discovers all foreign key references and inserts rows into referenced tables
 first.
 
-Rows from the single, denormalized L<"--source"> table a inserted into
+Rows from the single, denormalized L<"--source"> table are inserted into
 one or more L<"--dest"> table by matching column names.  For example, if
 the source table is,
 
-
-   CREATE TABLE `denorm_items` (
-     `id`    int(11) NOT NULL AUTO_INCREMENT,
-     `type`  varchar(16),
-     `color` varchar(16),
-     PRIMARY KEY (`id`)
+   CREATE TABLE denorm_items (
+     id    int NOT NULL AUTO_INCREMENT,
+     type  varchar,
+     color varchar,
+     PRIMARY KEY (id)
    );
 
 and the normalized destination tables are,
 
-   CREATE TABLE `types` (
-     `type_id` int(11) NOT NULL AUTO_INCREMENT,
-     `type`    varchar(16),
-     PRIMARY KEY (`type_id`)
+   CREATE TABLE types (
+     type_id int NOT NULL AUTO_INCREMENT,
+     type    varchar,
+     PRIMARY KEY (type_id)
    ) ENGINE=InnoDB;
 
-   CREATE TABLE `colors` (
-     `color_id` int(11) NOT NULL AUTO_INCREMENT,
-     `color` varchar(16),
-     PRIMARY KEY (`color_id`)
+   CREATE TABLE colors (
+     color_id int NOT NULL AUTO_INCREMENT,
+     color varchar,
+     PRIMARY KEY (color_id)
    ) ENGINE=InnoDB;
 
-   CREATE TABLE `items` (
-     `item_id`  int(11) NOT NULL AUTO_INCREMENT,
-     `type_id`  int(11) NOT NULL,
-     `color_id` int(11) NOT NULL,
-     PRIMARY KEY (`item_id`),
-     KEY `type_id` (`type_id`),
-     KEY `color_id` (`color_id`),
-     FOREIGN KEY (`type_id`) REFERENCES `types` (`type_id`) ON UPDATE CASCADE,
-     FOREIGN KEY (`color_id`) REFERENCES `colors` (`color_id`) ON UPDATE CASCADE
+   CREATE TABLE items (
+     item_id  int NOT NULL AUTO_INCREMENT,
+     type_id  int NOT NULL,
+     color_id int NOT NULL,
+     PRIMARY KEY (item_id),
+     KEY type_id (type_id),
+     KEY color_id (color_id),
+     FOREIGN KEY (type_id) REFERENCES types (type_id) ON UPDATE CASCADE,
+     FOREIGN KEY (color_id) REFERENCES colors (color_id) ON UPDATE CASCADE
    ) ENGINE=InnoDB;
 
-then the resulting column map is:
+then the resulting inserts will be, in order of tables:
 
-   SOURCE COLUMN  DESTINATION TABLE COLUMN
-   =============  ========================
-   id             (Not mapped, not copied)
-   type           types.type
-   color          colors.color
+   TABLE   COLUMN    VALUE FROM
+   ======  ========  =====================
+   types   type_id   NULL (auto-increment)
+   types   type      denorm_items.type
+   colors  color_id  NULL (auto-increment)
+   colors  color     denorm_items.color
+   items   item_id   NULL (auto-increment)
+   items   type_id   last types.type_id
+   items   color_id  last colors.color_id
+
+Since table C<items> has foreign key columns that reference tables <types>
+and <colors>, to insert values into C<items> requires selecting the
+corresponding foreign column values in C<types> and C<colors> from the
+last row inserted.  The last row inserted is identified either by a last
+insert ID if the table has an auto-increment column, or by the primary key
+column values.  This becomes complex because MySQL returns a last insert ID
+only if the auto-increment column is inserted with a NULL value, but it's
+possible that the tool could insert manual values for an auto-increment
+column.  Or, if primary key column values are used, the tool has to ensure
+that all of them are selected.  Most sane cases should be handled automatically,
+but if the tool cannot determine how to select the last row inserted for a
+table, it will die with an error like "Cannot get last insert ID for table ...".
+
+=head1 TECHNICAL CONSIDERATIONS
+
+There are a lot of cases concerning table structures, foreign key constraints,
+indexes, column types, etc.  This tool tries to do everything automatically,
+but for best results you should consider these technical points.
+
+=head2 DUPLICATE KEY VALUES
+
+If the denormalized L<"--source"> table has rows which will result in
+duplciate key values when inserted into the normalized L<"--dest"> tables,
+then you may need to use L<"--insert-ignore">.
+
+For example, if the denormalized table has addresses,
+
+  1,My Street,1,Montreal,1,Canada
+  2,Your Street,1,Montreal,1,Canada
+
+and the normalized tables are,
+
+   CREATE TABLE address (
+     address_id  smallint unsigned NOT NULL AUTO_INCREMENT,
+     address     varchar NOT NULL,
+     city_id     smallint unsigned NOT NULL,
+     PRIMARY KEY (address_id),
+     KEY idx_fk_city_id (city_id),
+     FOREIGN KEY (city_id) REFERENCES city (city_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE city (
+     city_id     smallint unsigned NOT NULL AUTO_INCREMENT,
+     city        varchar NOT NULL,
+     country_id  smallint unsigned NOT NULL,
+     PRIMARY KEY (city_id),
+     KEY idx_fk_country_id (country_id),
+     FOREIGN KEY (country_id) REFERENCES country (country_id)
+   ) ENGINE=InnoDB;
+
+   CREATE TABLE country (
+     country_id  smallint unsigned NOT NULL AUTO_INCREMENT,
+     country     varchar NOT NULL,
+     PRIMARY KEY (country_id)
+   ) ENGINE=InnoDB;
+
+this will create a duplicate key error when the tool tries to insert row
+C<1,Canada> into table C<country> for the second address.  The same will
+happen for inserting row C<1,Montreal> into table C<city>.
+
+The tool does not check to see if a row already exists; it blindly inserts
+everything.  So currently L<"--insert-ignore">, or possible L<"--replace">
+if foreign key constraints aren't being used, is the only solution.
+
+=head2 SOURCE TABLE CHUNK INDEX
+
+The tool chunks the L<"--source"> table using the L<"--chunk"> index.  By
+default, L<"--[no]ascend-first"> is true which means that only the first
+column in a multi-column chunk index is used.  This is more efficient and
+should work in most cases, but if not, then you need to specify
+C<--no-ascend-first>.
+
+=head2 SCHEMA FILTERS
+
+You should probably use the schema filter options L<"--databases"> and
+maybe L<"--tables"> otherwise the tool will try to map columns from the
+L<"--source"> table to any table in any database.  Also, it's more efficient
+to specify only the databases or tables needed.
 
 =head1 OPTIONS
 
