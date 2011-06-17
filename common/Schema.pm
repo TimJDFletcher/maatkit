@@ -80,8 +80,8 @@ sub new {
    my $self = {
       %args,
       schema  => {},  # keyed on db->tbl
-      columns => {},
-      tables  => {},
+      # columns => {},  # No tools use is_duplicate_table() or
+      # tables  => {},  # is_duplicate_column() yet...
    };
    return bless $self, $class;
 }
@@ -100,17 +100,17 @@ sub get_table {
    return;
 }
 
-sub is_duplicate_column {
-   my ( $self, $col ) = @_;
-   return unless $col;
-   return ($self->{columns}->{$col} || 0) > 1 ? 1 : 0;
-}
+#sub is_duplicate_column {
+#   my ( $self, $col ) = @_;
+#   return unless $col;
+#   return ($self->{columns}->{$col} || 0) > 1 ? 1 : 0;
+#}
 
-sub is_duplicate_table {
-   my ( $self, $tbl ) = @_;
-   return unless $tbl;
-   return ($self->{tables}->{$tbl} || 0) > 1 ? 1 : 0;
-}
+#sub is_duplicate_table {
+#   my ( $self, $tbl ) = @_;
+#   return unless $tbl;
+#   return ($self->{tables}->{$tbl} || 0) > 1 ? 1 : 0;
+#}
 
 # Sub: add_schema_object
 #   Add a schema object.  This sub is called by
@@ -135,11 +135,11 @@ sub add_schema_object {
    }
 
    # Add/save this schema object.
-   $self->{schema}->{$db}->{$tbl} = $schema_object;
+   $self->{schema}->{lc $db}->{lc $tbl} = $schema_object;
 
    # Get duplicate column and table names.
-   map { $self->{columns}->{$_}++ } @{$tbl_struct->{cols}};
-   $self->{tables}->{$tbl_struct->{name}}++;
+   # map { $self->{columns}->{lc $_}++ } @{$tbl_struct->{cols}};
+   # $self->{tables}->{lc $tbl_struct->{name}}++;
 
    return;
 }
@@ -158,6 +158,10 @@ sub find_column {
    else {
       ($col, $tbl, $db) = @args{qw(col tbl db)};
    }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+   $col = lc $col;
 
    if ( !$col ) {
       MKDEBUG && _d('No column specified or parsed');
@@ -201,6 +205,57 @@ sub find_column {
    }
 
    return \@tbls;
+}
+
+sub find_table {
+   my ( $self, %args ) = @_;
+   my $ignore = $args{ignore};
+   my $schema = $self->{schema};
+
+   my ($tbl, $db);
+   if ( my $tbl_name = $args{tbl_name} ) {
+      ($tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $tbl_name;
+      MKDEBUG && _d('Table', $tbl_name, 'has db', $db, 'tbl', $tbl);
+   }
+   else {
+      ($tbl, $db) = @args{qw(tbl db)};
+   }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+
+   if ( !$tbl ) {
+      MKDEBUG && _d('No table specified or parsed');
+      return;
+   }
+   MKDEBUG && _d('Finding table', $tbl, 'in', $db);
+
+   if ( $db && !$schema->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'does not exist');
+      return;
+   }
+
+   if ( $db && $tbl && !$schema->{$db}->{$tbl} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not exist in database', $db);
+      return;
+   }
+
+   my @dbs;
+   my @search_dbs = $db ? ($db) : keys %$schema;
+   DATABASE:
+   foreach my $search_db ( @search_dbs ) {
+      if ( $ignore && grep { $_->{db} eq $search_db } @$ignore ) {
+         MKDEBUG && _d('Ignoring', $search_db);
+         next DATABASE;
+      }
+
+      if ( exists $schema->{$search_db}->{$tbl} ) {
+         MKDEBUG && _d('Table', $tbl, 'exists in', $search_db);
+         push @dbs, $search_db;
+      }
+   }
+
+   return \@dbs;
 }
 
 sub _d {

@@ -2294,22 +2294,34 @@ foreach my $test ( @cases ) {
 }
 
 # ############################################################################
-# Use SchemaQualifier to achieve full awesomeness.
+# Use Schema to achieve full awesomeness.
 # ############################################################################
-use MysqldumpParser;
+use OptionParser;
+use DSNParser;
 use Quoter;
 use TableParser;
-use SchemaQualifier;
+use FileIterator;
+use Schema;
+use SchemaIterator;
 
-my $p  = new MysqldumpParser();
-my $q  = new Quoter;
-my $tp = new TableParser(Quoter => $q);
-my $sq = new SchemaQualifier(TableParser => $tp, Quoter => $q);
+my $o  = new OptionParser(description => 'SchemaIterator');
+$o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
 
-my $dump = $p->parse_create_tables(
-   file => "$trunk/common/t/samples/mysqldump-no-data/dump001.txt",
+my $q          = new Quoter;
+my $tp         = new TableParser(Quoter => $q);
+my $fi         = new FileIterator();
+my $file_itr   = $fi->get_file_itr("$trunk/common/t/samples/mysqldump-no-data/dump001.txt");
+my $schema     = new Schema();
+my $schema_itr = new SchemaIterator(
+   file_itr     => $file_itr,
+   OptionParser => $o,
+   Quoter       => $q,
+   TableParser  => $tp,
+   keep_ddl     => 1,
+   Schema       => $schema,
 );
-$sq->set_schema_from_mysqldump(dump => $dump);
+# Init schema.
+1 while ($schema_itr->next_schema_object());
 
 # Notice how c3 and b aren't qualified.
 is_deeply(
@@ -2331,11 +2343,11 @@ is_deeply(
       } ],
       unknown  => undef,
    },
-   "Query struct without SchemaQualifier"
+   "Query struct without Schema"
 );
 
 # Now they're qualified.
-$sp->set_SchemaQualifier($sq);
+$sp->set_Schema($schema);
 is_deeply(
    $sp->parse("select c3 from b where 'foo'=c3"),
    {
@@ -2355,7 +2367,7 @@ is_deeply(
       } ],
       unknown  => undef,
    },
-   "Query struct with SchemaQualifier"
+   "Query struct with Schema"
 );
 
 # #############################################################################

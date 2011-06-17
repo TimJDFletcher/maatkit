@@ -539,22 +539,34 @@ $ta = new TableUsage(
 );
 
 # ############################################################################
-# Use SchemaQualifier instead of EXPLAIN EXTENDED.
+# Use Schema instead of EXPLAIN EXTENDED.
 # ############################################################################
-use MysqldumpParser;
+use OptionParser;
+use DSNParser;
 use Quoter;
 use TableParser;
-use SchemaQualifier;
+use FileIterator;
+use Schema;
+use SchemaIterator;
 
-my $p  = new MysqldumpParser();
-my $q  = new Quoter;
-my $tp = new TableParser(Quoter => $q);
-my $sq = new SchemaQualifier(TableParser => $tp, Quoter => $q);
+my $o  = new OptionParser(description => 'SchemaIterator');
+$o->get_specs("$trunk/mk-table-checksum/mk-table-checksum");
 
-my $dump = $p->parse_create_tables(
-   file => "$trunk/common/t/samples/mysqldump-no-data/dump001.txt",
+my $q          = new Quoter;
+my $tp         = new TableParser(Quoter => $q);
+my $fi         = new FileIterator();
+my $file_itr   = $fi->get_file_itr("$trunk/common/t/samples/mysqldump-no-data/dump001.txt");
+my $schema     = new Schema();
+my $schema_itr = new SchemaIterator(
+   file_itr     => $file_itr,
+   OptionParser => $o,
+   Quoter       => $q,
+   TableParser  => $tp,
+   keep_ddl     => 1,
+   Schema       => $schema,
 );
-$sq->set_schema_from_mysqldump(dump => $dump);
+# Init schema.
+1 while ($schema_itr->next_schema_object());
 
 # Before, this is as correct as we can determine.  The WHERE access is missing
 # because c3 is not qualified and there's multiple tables, so the code can't
@@ -574,13 +586,13 @@ test_get_table_usage(
          },
       ],
    ],
-   "Tables without SchemaQualifier"
+   "Tables without Schema"
 ); 
 
 # After, now we have a db for table b, but not for a because the schema
 # we loaded has two table a (test.a and test2.a).  The WHERE access is
 # now present.
-$sp->set_SchemaQualifier($sq);
+$sp->set_Schema($schema);
 test_get_table_usage(
    "SELECT a.c1, c3 FROM a JOIN b ON a.c2=c3 WHERE NOW()<c3",
    [
@@ -602,11 +614,11 @@ test_get_table_usage(
          },
       ],
    ],
-   "Tables with SchemaQualifier"
+   "Tables with Schema"
 ); 
 
 # Set it back for the next tests.
-$sp->set_SchemaQualifier(undef);
+$sp->set_Schema(undef);
 
 # #############################################################################
 # Done.

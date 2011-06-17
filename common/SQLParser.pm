@@ -85,8 +85,7 @@ my $column_ident = qr/(?:
 #   %args - Arguments
 #
 # Optional Arguments:
-#   SchemaQualifier - <SchemaQualifier> object.  Can be set later by calling
-#                     <set_SchemaQualifier()>.
+#   Schema - <Schema> object.  Can be set later by calling <set_Schema()>.
 #
 # Returns:
 #   SQLParser object
@@ -1237,19 +1236,18 @@ sub parse_identifier {
       die "Invalid number of parts in $type reference: $ident";
    }
    
-   if ( $self->{SchemaQualifier} ) {
-      if ( $type eq 'column' && !$ident_struct{tbl} ) {
-         my $qcol = $self->{SchemaQualifier}->qualify_column(
-            column => $ident_struct{col},
-         );
-         $ident_struct{db}  = $qcol->{db}  if $qcol->{db};
-         $ident_struct{tbl} = $qcol->{tbl} if $qcol->{tbl};
+   if ( $self->{Schema} ) {
+      if ( $type eq 'column' && (!$ident_struct{tbl} || !$ident_struct{db}) ) {
+         my $qcol = $self->{Schema}->find_column(%ident_struct);
+         if ( $qcol && @$qcol == 1 ) {
+            @ident_struct{qw(db tbl)} = @{$qcol->[0]}{qw(db tbl)};
+         }
       }
-      elsif ( $type eq 'table' && !$ident_struct{db} ) {
-         my $db = $self->{SchemaQualifier}->get_database_for_table(
-            table => $ident_struct{tbl},
-         );
-         $ident_struct{db} = $db if $db;
+      elsif ( !$ident_struct{db} ) {
+         my $qtbl = $self->{Schema}->find_table(%ident_struct);
+         if ( $qtbl && @$qtbl == 1 ) {
+            $ident_struct{db} = $qtbl->[0];
+         }
       }
    }
 
@@ -1317,9 +1315,9 @@ sub is_identifier {
    return 0;
 }
 
-sub set_SchemaQualifier {
+sub set_Schema {
    my ( $self, $sq ) = @_;
-   $self->{SchemaQualifier} = $sq;
+   $self->{Schema} = $sq;
    return;
 }
 
