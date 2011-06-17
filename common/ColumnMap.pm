@@ -292,10 +292,12 @@ sub _make_fetch_row_sth {
 
 sub mapped_columns {
    my ( $self, $tbl ) = @_;
-   die "I need a tbl argument"
-      unless $tbl;
-   die "No mapped columns for table $tbl->{db}.$tbl->{tbl}"
-      unless $tbl->{mapped_columns};
+   die "I need a tbl argument" unless $tbl;
+
+   if ( !$tbl->{mapped_columns} ) {
+      MKDEBUG && _d('No columns are mapped to table', $tbl->{db}, $tbl->{tbl});
+      return;
+   }
 
    if ( !$tbl->{mapped_columns_sorted} ) {
       $tbl->{mapped_columns_sorted} = sort_columns(
@@ -309,6 +311,8 @@ sub mapped_columns {
 sub mapped_values {
    my ( $self, $tbl ) = @_;
    my $mapped_cols = $self->mapped_columns($tbl);
+   return unless $mapped_cols;
+
    my $value_for   = $tbl->{value_for};
    my @vals        = map { $value_for->{$_} || '?' } @$mapped_cols;
    return \@vals;
@@ -349,6 +353,19 @@ sub map_values {
       @$mapped_cols);
 
    return \@values;
+}
+
+sub map_foreign_table {
+   my ( $self, $tbl ) = @_;
+   return unless $tbl;
+   MKDEBUG && _d('Mapping foreign table', $tbl->{db}, $tbl->{tbl});
+   if ( $tbl->{fk_struct} ) {
+      _map_fk_columns(
+         tbl    => $tbl,
+         Schema => $self->{Schema},
+      );
+   } 
+   return $self->mapped_columns($tbl);
 }
 
 # Sub: sort_columns

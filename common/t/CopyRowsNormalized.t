@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 29;
+   plan tests => 34;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -87,12 +87,6 @@ sub make_copier {
    # Init the schema qualifier.
    1 while(defined $schema_itr->next_schema_object());
 
-   my $column_map = new ColumnMap(
-      src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
-      Schema          => $schema,
-      constant_values => $args{constant_values},
-   );
-
    my $src = {
       dbh   => $src_dbh,
       tbl   => $schema->get_table($args{src_db}, $args{src_tbl}),
@@ -107,6 +101,18 @@ sub make_copier {
       dbh  => $dst_dbh,
       tbls => \@dst_tbls,
    };
+   
+   my $column_map = new ColumnMap(
+      src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
+      Schema          => $schema,
+      constant_values => $args{constant_values},
+   );
+   foreach my $dst_tbl ( @dst_tbls ) {
+      if ( !$column_map->mapped_columns($dst_tbl) ) {
+         $column_map->map_foreign_table($dst_tbl)
+            or die "Table $dst_tbl->{db}.$dst_tbl->{tbl} does not map";
+      }
+   }
 
    $stats = {};
 
@@ -348,9 +354,8 @@ is_deeply(
    'data rows'
 );
 
-
 # ############################################################################
-# 
+# This fk struct is address -> city -> country.
 # ############################################################################
 $dbh->do('drop database if exists test');
 $dbh->do('create database test');
@@ -462,6 +467,91 @@ is_deeply(
    $rows,
    $rows2,
    "Normalized rows match denormalized rows"
+);
+
+# ###########################################################################
+# The dest table is nothing but fk cols, so no source tbl cols map to it
+# and all its values come from fetch backs.
+# ###########################################################################
+$dbh->do('drop database if exists test');
+$dbh->do('create database test');
+$sb->load_file("master", "$in/tbls003.sql", "test");
+@ARGV = qw(-d test);
+$o->get_opts();
+$copy_rows = make_copier(
+   foreign_keys => 1,
+   src_db       => 'test',
+   src_tbl      => 'denorm_items',
+   dst_tbls     => [
+      ['test', 'types' ], # child2
+      ['test', 'colors'], # child1
+      ['test', 'items' ], # parent
+   ],
+);
+
+$rows = $dbh->selectall_arrayref('select * from types, colors, items');
+is_deeply(
+   $rows,
+   [],
+   'Dest tables types, colors, and items are empty'
+);
+
+$rows = $dbh->selectall_arrayref('select * from denorm_items order by id');
+is_deeply(
+   $rows,
+   [
+      [1,   't1',   'red'   ],
+      [2,   't2',   'red'   ],
+      [3,   't2',   'blue'  ],
+      [4,   't3',   'black' ],
+      [5,   't4',   'orange'],
+      [6,   't5',   'green' ],
+   ],
+   'Source table denorm_items has data'
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from types order by type_id');
+is_deeply(
+   $rows,
+   [
+      [1,   't1'],
+      [2,   't2'],
+      [3,   't2'],
+      [4,   't3'],
+      [5,   't4'],
+      [6,   't5'],
+   ],
+   'types rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from colors order by color_id');
+is_deeply(
+   $rows,
+   [
+      [1,   'red'   ],
+      [2,   'red'   ],
+      [3,   'blue'  ],
+      [4,   'black' ],
+      [5,   'orange'],
+      [6,   'green' ],
+   ],
+   'colors rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from items order by item_id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1],
+      [2, 2, 2],
+      [3, 3, 3],
+      [4, 4, 4],
+      [5, 5, 5],
+      [6, 6, 6],
+   ],
+   'items rows'
 );
 
 # #############################################################################
