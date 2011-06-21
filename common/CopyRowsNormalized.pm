@@ -47,14 +47,14 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   Quoter       - <Quoter> object.
 #
 # Optional Arguments:
-#   asc_first  - Ascend only first column of multi-column index (default true).
-#   asc_only   - Ascend with > instead of >= (default true).
-#   txn_size   - COMMIT after inserting this many rows in each dst table
-#                (default 1)
-#   print      - Print SQL statements.
-#   execute    - Execute SQL statements.
-#   replace    - REPLACE instead of INSERT.
-#   ignore     - INSERT IGNORE.
+#   asc_first     - Ascend only first column of multi-column idx (default true).
+#   asc_only      - Ascend with > instead of >= (default true).
+#   txn_size      - COMMIT after inserting this many rows in each dst table
+#                   (default 1)
+#   print         - Print SQL statements.
+#   execute       - Execute SQL statements.
+#   replace       - REPLACE instead of INSERT.
+#   insert_ignore - INSERT IGNORE.
 #
 # Returns:
 #   CopyRowsNormalized object
@@ -110,8 +110,8 @@ sub new {
    # which values from the source should be inserted into the given dest.
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
       my $cols = $column_map->mapped_columns($dst_tbl);
-      my $sql  = ($args{replace} ? 'REPLACE' : 'INSERT')
-               . ($args{ignore}  ? ' IGNORE' : '')
+      my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
+               . ($args{insert_ignore}  ? ' IGNORE' : '')
                . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
                . ' (' . join(', ', @$cols) . ')'
                . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
@@ -133,7 +133,6 @@ sub new {
          $dst_tbl->{insert}->{last_insert_id} = _make_last_insert_id_callback(
             tbl  => $dst_tbl,
             cols => { map { $_ => 1 } @$cols },
-            %args
          );
       }
    }
@@ -264,9 +263,11 @@ sub _copy_rows_in_chunk {
 
          if ( my $last_insert_id = $insert->{last_insert_id} ) {
             $dst_tbl->{last_insert_id} = $last_insert_id->(
-               %args,
-               row => $row,
-               sth => $insert->{sth},
+               dbh   => $dst_dbh,
+               tbl   => $dst_tbl,
+               row   => $row,
+               sth   => $insert->{sth},
+               stats => $stats,
             );
             MKDEBUG && _d('Last insert id:',
                Dumper($dst_tbl->{last_insert_id}));
@@ -319,8 +320,19 @@ sub _make_last_insert_id_callback {
          MKDEBUG && _d('Using last insert id');
          $callback = sub {
             my ( %args ) = @_;
+            my $last_insert_id = $args{sth}->{mysql_insertid};
+            if ( !$last_insert_id ) {
+               MKDEBUG && _d('No last insert id, getting max value for',
+                  'auto-increment column', $auto_inc_col);
+               $args{stats}->{no_last_insert_id}++ if $args{stats};
+               my $sql = "SELECT MAX($auto_inc_col) AS last_insert_id "
+                       . "FROM $tbl->{db}.$tbl->{tbl}";
+               MKDEBUG && _d($sql);
+               my $row = $args{dbh}->selectrow_hashref($sql);
+               $last_insert_id = $row->{last_insert_id};
+            }
             my %last_row_id = (
-               $auto_inc_col => $args{sth}->{mysql_insertid},
+               $auto_inc_col => $last_insert_id,
             );
             return \%last_row_id;
          };

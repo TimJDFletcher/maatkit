@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 34;
+   plan tests => 38;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -117,18 +117,18 @@ sub make_copier {
    $stats = {};
 
    my $copy_rows = new CopyRowsNormalized(
-      src          => $src,
-      dst          => $dst,
-      ColumnMap    => $column_map,
-      Quoter       => $q,
-      TableNibbler => new TableNibbler(TableParser => $tp, Quoter => $q),
-      stats        => $stats,
-      txn_size     => $args{txn_size} || 1,
-      foreign_keys => $args{foreign_keys},
-      execute      => defined $args{execute} ? $args{execute} : 1,
-      print        => $args{print},
-      replace      => $args{replace},
-      ignore       => $args{ignore},
+      src           => $src,
+      dst           => $dst,
+      ColumnMap     => $column_map,
+      Quoter        => $q,
+      TableNibbler  => new TableNibbler(TableParser => $tp, Quoter => $q),
+      stats         => $stats,
+      txn_size      => $args{txn_size} || 1,
+      foreign_keys  => $args{foreign_keys},
+      execute       => defined $args{execute} ? $args{execute} : 1,
+      print         => $args{print},
+      replace       => $args{replace},
+      insert_ignore => $args{insert_ignore},
    );
 
    return $copy_rows;
@@ -363,12 +363,12 @@ $sb->load_file("master", "$in/tbls002.sql", "test");
 @ARGV = qw(-d test);
 $o->get_opts();
 $copy_rows = make_copier(
-   ignore       => 1,
-   foreign_keys => 1,
-   src_db       => 'test',
-   src_tbl      => 'denorm_address',
-   txn_size     => 5,
-   dst_tbls     => [
+   insert_ignore => 1,
+   foreign_keys  => 1,
+   src_db        => 'test',
+   src_tbl       => 'denorm_address',
+   txn_size      => 5,
+   dst_tbls      => [
       ['test', 'country'],
       ['test', 'city'   ],
       ['test', 'address'], # parent
@@ -552,6 +552,66 @@ is_deeply(
       [6, 6, 6],
    ],
    'items rows'
+);
+
+# ###########################################################################
+# These tables require INSERT IGNORE, an insert a duplicate row which
+# causes the auto-inc on entity to *not* be incremented.
+# ###########################################################################
+$sb->load_file("master", "$in/tbls004.sql", "test");
+@ARGV = qw(-d test);
+$o->get_opts();
+$copy_rows = make_copier(
+   foreign_keys  => 1,
+   insert_ignore => 1,
+   src_db        => 'test',
+   src_tbl       => 'raw_data',
+   txn_size      => 100,
+   dst_tbls      => [
+      ['test', 'entity'     ], # child2
+      ['test', 'data_report'], # child1
+      ['test', 'data'       ], # parent
+   ],
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', undef, undef],
+      [2, '2011-06-01', undef, undef],
+      [3, '2011-06-01', undef, undef],
+   ],
+   'data_report rows (duplicate key with auto-inc)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 10, 11],
+      [3, 20, 21],
+   ],
+   'entity rows  (duplicate key with auto-inc)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 12, 13],
+      [2, 2, 1, 12, 13],
+      [3, 2, 3, 22, 23],
+   ],
+   'data rows  (duplicate key with auto-inc)'
+);
+
+is(
+   $stats->{no_last_insert_id},
+   1,
+   '1 no last insert id'
 );
 
 # #############################################################################
