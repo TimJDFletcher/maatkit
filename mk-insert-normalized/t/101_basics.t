@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 19;
+   plan tests => 22;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -71,7 +71,7 @@ ok(
          '--source', "F=$cnf,D=test,t=raw_data",
          '--dest',   "t=data",
          '--constant-values', "$trunk/mk-insert-normalized/t/samples/raw-data-const-vals.txt",
-         qw(-d test --print --execute --txn-size 1)) },
+         qw(--databases test --print --execute --txn-size 1)) },
       "$out/raw-data.txt",
       sed => [
          "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
@@ -166,7 +166,7 @@ is_deeply(
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=denorm_address",
    '--dest',   "t=address",
-   qw(-d test --execute),
+   qw(--databases test --execute),
    qw(--insert-ignore));  # required since denorm_address has dupes
 
 is_deeply(
@@ -277,7 +277,7 @@ is_deeply(
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=denorm_items",
    '--dest',   "t=items",
-   qw(-d test --execute));
+   qw(--databases test --execute));
 
 $rows = $dbh->selectall_arrayref('select * from types order by type_id');
 is_deeply(
@@ -319,6 +319,50 @@ is_deeply(
       [6, 6, 6],
    ],
    'items rows'
+);
+
+# ###########################################################################
+# These tables require INSERT IGNORE, an insert a duplicate row which
+# causes the auto-inc on entity to *not* be incremented.
+# ###########################################################################
+$sb->load_file("master", "common/t/samples/CopyRowsNormalized/tbls004.sql", "test");
+$dbh->do('use test');
+
+mk_insert_normalized::main(
+   '--source', "F=$cnf,D=test,t=raw_data",
+   '--dest',   "t=data",
+   qw(--databases test --insert-ignore --execute));
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', undef, undef],
+      [2, '2011-06-01', undef, undef],
+      [3, '2011-06-01', undef, undef],
+   ],
+   'data_report rows (duplicate key with auto-inc)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 10, 11],
+      [3, 20, 21],
+   ],
+   'entity rows (duplicate key with auto-inc)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 12, 13],
+      [2, 2, 1, 12, 13],
+      [3, 2, 3, 22, 23],
+   ],
+   'data rows (duplicate key with auto-inc)'
 );
 
 # #############################################################################

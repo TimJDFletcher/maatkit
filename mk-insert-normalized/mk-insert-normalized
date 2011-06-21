@@ -2635,7 +2635,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# Schema package 7547
+# Schema package 7565
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/Schema.pm
@@ -2667,8 +2667,6 @@ sub new {
    my $self = {
       %args,
       schema  => {},  # keyed on db->tbl
-      columns => {},
-      tables  => {},
    };
    return bless $self, $class;
 }
@@ -2687,17 +2685,7 @@ sub get_table {
    return;
 }
 
-sub is_duplicate_column {
-   my ( $self, $col ) = @_;
-   return unless $col;
-   return ($self->{columns}->{$col} || 0) > 1 ? 1 : 0;
-}
 
-sub is_duplicate_table {
-   my ( $self, $tbl ) = @_;
-   return unless $tbl;
-   return ($self->{tables}->{$tbl} || 0) > 1 ? 1 : 0;
-}
 
 sub add_schema_object {
    my ( $self, $schema_object ) = @_;
@@ -2715,10 +2703,8 @@ sub add_schema_object {
       return;
    }
 
-   $self->{schema}->{$db}->{$tbl} = $schema_object;
+   $self->{schema}->{lc $db}->{lc $tbl} = $schema_object;
 
-   map { $self->{columns}->{$_}++ } @{$tbl_struct->{cols}};
-   $self->{tables}->{$tbl_struct->{name}}++;
 
    return;
 }
@@ -2737,6 +2723,10 @@ sub find_column {
    else {
       ($col, $tbl, $db) = @args{qw(col tbl db)};
    }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+   $col = lc $col;
 
    if ( !$col ) {
       MKDEBUG && _d('No column specified or parsed');
@@ -2780,6 +2770,57 @@ sub find_column {
    }
 
    return \@tbls;
+}
+
+sub find_table {
+   my ( $self, %args ) = @_;
+   my $ignore = $args{ignore};
+   my $schema = $self->{schema};
+
+   my ($tbl, $db);
+   if ( my $tbl_name = $args{tbl_name} ) {
+      ($tbl, $db) = reverse map { s/`//g; $_ } split /[.]/, $tbl_name;
+      MKDEBUG && _d('Table', $tbl_name, 'has db', $db, 'tbl', $tbl);
+   }
+   else {
+      ($tbl, $db) = @args{qw(tbl db)};
+   }
+
+   $db  = lc $db;
+   $tbl = lc $tbl;
+
+   if ( !$tbl ) {
+      MKDEBUG && _d('No table specified or parsed');
+      return;
+   }
+   MKDEBUG && _d('Finding table', $tbl, 'in', $db);
+
+   if ( $db && !$schema->{$db} ) {
+      MKDEBUG && _d('Database', $db, 'does not exist');
+      return;
+   }
+
+   if ( $db && $tbl && !$schema->{$db}->{$tbl} ) {
+      MKDEBUG && _d('Table', $tbl, 'does not exist in database', $db);
+      return;
+   }
+
+   my @dbs;
+   my @search_dbs = $db ? ($db) : keys %$schema;
+   DATABASE:
+   foreach my $search_db ( @search_dbs ) {
+      if ( $ignore && grep { $_->{db} eq $search_db } @$ignore ) {
+         MKDEBUG && _d('Ignoring', $search_db);
+         next DATABASE;
+      }
+
+      if ( exists $schema->{$search_db}->{$tbl} ) {
+         MKDEBUG && _d('Table', $tbl, 'exists in', $search_db);
+         push @dbs, $search_db;
+      }
+   }
+
+   return \@dbs;
 }
 
 sub _d {
@@ -3664,7 +3705,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7559
+# CopyRowsNormalized package 7569
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -3728,8 +3769,8 @@ sub new {
 
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
       my $cols = $column_map->mapped_columns($dst_tbl);
-      my $sql  = ($args{replace} ? 'REPLACE' : 'INSERT')
-               . ($args{ignore}  ? ' IGNORE' : '')
+      my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
+               . ($args{insert_ignore}  ? ' IGNORE' : '')
                . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
                . ' (' . join(', ', @$cols) . ')'
                . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
@@ -3749,7 +3790,6 @@ sub new {
          $dst_tbl->{insert}->{last_insert_id} = _make_last_insert_id_callback(
             tbl  => $dst_tbl,
             cols => { map { $_ => 1 } @$cols },
-            %args
          );
       }
    }
@@ -3873,9 +3913,11 @@ sub _copy_rows_in_chunk {
 
          if ( my $last_insert_id = $insert->{last_insert_id} ) {
             $dst_tbl->{last_insert_id} = $last_insert_id->(
-               %args,
-               row => $row,
-               sth => $insert->{sth},
+               dbh   => $dst_dbh,
+               tbl   => $dst_tbl,
+               row   => $row,
+               sth   => $insert->{sth},
+               stats => $stats,
             );
             MKDEBUG && _d('Last insert id:',
                Dumper($dst_tbl->{last_insert_id}));
@@ -3926,8 +3968,19 @@ sub _make_last_insert_id_callback {
          MKDEBUG && _d('Using last insert id');
          $callback = sub {
             my ( %args ) = @_;
+            my $last_insert_id = $args{sth}->{mysql_insertid};
+            if ( !$last_insert_id ) {
+               MKDEBUG && _d('No last insert id, getting max value for',
+                  'auto-increment column', $auto_inc_col);
+               $args{stats}->{no_last_insert_id}++ if $args{stats};
+               my $sql = "SELECT MAX($auto_inc_col) AS last_insert_id "
+                       . "FROM $tbl->{db}.$tbl->{tbl}";
+               MKDEBUG && _d($sql);
+               my $row = $args{dbh}->selectrow_hashref($sql);
+               $last_insert_id = $row->{last_insert_id};
+            }
             my %last_row_id = (
-               $auto_inc_col => $args{sth}->{mysql_insertid},
+               $auto_inc_col => $last_insert_id,
             );
             return \%last_row_id;
          };
@@ -4165,19 +4218,19 @@ sub main {
    my $stats = {};
 
    my $copy_rows = new CopyRowsNormalized(
-      src          => $src,
-      dst          => $dst,
-      ColumnMap    => $column_map,
-      stats        => $stats,
-      txn_size     => $o->get('txn-size'),
-      print        => $o->get('print'),
-      execute      => $o->get('execute'),
-      replace      => $o->get('replace'),
-      ignore       => $o->get('insert-ignore'),
-      asc_first    => $o->get('ascend-first'),
-      foreign_keys => 1,
-      Quoter       => $q,
-      TableNibbler => new TableNibbler(%common_modules),
+      src           => $src,
+      dst           => $dst,
+      ColumnMap     => $column_map,
+      stats         => $stats,
+      txn_size      => $o->get('txn-size'),
+      print         => $o->get('print'),
+      execute       => $o->get('execute'),
+      replace       => $o->get('replace'),
+      insert_ignore => $o->get('insert-ignore'),
+      asc_first     => $o->get('ascend-first'),
+      foreign_keys  => 1,
+      Quoter        => $q,
+      TableNibbler  => new TableNibbler(%common_modules),
    );
 
    if ( $o->get('execute') ) {
@@ -4523,7 +4576,7 @@ printed.
 
 =item --databases
 
-short form: -d; type: hash
+type: hash
 
 Search only this comma-separated list of databases for matching L<"--dest"> tables.
 
@@ -4653,7 +4706,7 @@ have a chunkable index; see L<"--chunk-index">.
 
 =item --tables
 
-short form: -t; type: hash
+type: hash
 
 Search only this comma-separated list of tables for matching L<"--dest"> tables.
 
