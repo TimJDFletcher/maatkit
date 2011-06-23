@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 38;
+   plan tests => 40;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -594,7 +594,7 @@ is_deeply(
       [1, 10, 11],
       [3, 20, 21],
    ],
-   'entity rows  (duplicate key with auto-inc)'
+   'entity rows (duplicate key with auto-inc)'
 );
 
 $rows = $dbh->selectall_arrayref('select * from data order by data_report');
@@ -602,16 +602,84 @@ is_deeply(
    $rows,
    [
       [1, 1, 1, 12, 13],
-      [2, 2, 1, 12, 13],
-      [3, 2, 3, 22, 23],
+      [1, 2, 1, 12, 13],
+      [1, 2, 3, 22, 23],
    ],
-   'data rows  (duplicate key with auto-inc)'
+   'data rows (duplicate key with auto-inc)'
+) or print Dumper($rows);
+
+# ###########################################################################
+# Two runs on the same tables.
+# ###########################################################################
+$sb->load_file("master", "$in/tbls005.sql", "test");
+@ARGV = ('-d', 'test', '-t', 'raw_data,data,entity,data_report');
+$o->get_opts();
+$copy_rows = make_copier(
+   foreign_keys  => 1,
+   insert_ignore => 1,
+   src_db        => 'test',
+   src_tbl       => 'raw_data',
+   txn_size      => 100,
+   dst_tbls      => [
+      ['test', 'entity'     ], # child2
+      ['test', 'data_report'], # child1
+      ['test', 'data'       ], # parent
+   ],
 );
 
-is(
-   $stats->{no_last_insert_id},
-   1,
-   '1 no last insert id'
+$copy_rows->copy();
+
+@ARGV = ('-d', 'test', '-t', 'raw_data_2,data,entity,data_report');
+$o->get_opts();
+
+$copy_rows = make_copier(
+   foreign_keys  => 1,
+   insert_ignore => 1,
+   src_db        => 'test',
+   src_tbl       => 'raw_data_2',
+   txn_size      => 100,
+   dst_tbls      => [
+      ['test', 'entity'     ], # child2
+      ['test', 'data_report'], # child1
+      ['test', 'data'       ], # parent
+   ],
+);
+warn "foo";
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', '2011-06-01 23:23:23', '2011-06-01 23:55:55' ],
+      [4, '2011-06-01', '2011-06-01 23:23:23', '2011-06-01 23:55:57' ],
+   ],
+   'data_report rows (with raw_data_2)'
+) or print Dumper($rows);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 10, 11 ],
+      [3, 20, 21 ],
+   ],
+   'entity rows (with raw_data_2)'
+) or print Dumper($rows);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 12, 13],
+      [1, 2, 1, 12, 13],
+      [1, 2, 3, 22, 23],
+      [4, 1, 1, 12, 13],
+      [4, 2, 1, 12, 13],
+      [4, 2, 3, 22, 23],
+
+   ],
+   'data rows (with raw_data_2)'
 );
 
 # #############################################################################

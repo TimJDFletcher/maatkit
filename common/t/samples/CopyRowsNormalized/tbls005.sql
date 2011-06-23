@@ -9,13 +9,27 @@ CREATE TABLE `raw_data` (
   `entity_property_2` int(11) NOT NULL default '0',
   `data_1` int(11) default NULL,
   `data_2` int(11) default NULL,
-  PRIMARY KEY  (`date`,`hour`,`entity_property_1`,`entity_property_2`)
+  `posted` datetime NOT NULL default '0000-00-00 00:00:00',
+  `acquired` datetime NOT NULL default '0000-00-00 00:00:00',
+  PRIMARY KEY  (`date`,`hour`,`entity_property_1`,`entity_property_2`,`posted`,`acquired`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
-INSERT INTO `raw_data` VALUES
-  ('2011-06-01',1,10,11,12,13),
-  ('2011-06-01',2,10,11,12,13),
-  ('2011-06-01',2,20,21,22,23);
+INSERT INTO `raw_data` VALUES ('2011-06-01',1,10,11,12,13,'2011-06-01 23:23:23','2011-06-01 23:55:55'),('2011-06-01',2,10,11,12,13,'2011-06-01 23:23:23','2011-06-01 23:55:55'),('2011-06-01',2,20,21,22,23,'2011-06-01 23:23:23','2011-06-01 23:55:55');
+
+CREATE TABLE `raw_data_2` (
+  `date` date NOT NULL default '0000-00-00',
+  `hour` tinyint(4) NOT NULL default '0',
+  `entity_property_1` int(11) NOT NULL default '0',
+  `entity_property_2` int(11) NOT NULL default '0',
+  `data_1` int(11) default NULL,
+  `data_2` int(11) default NULL,
+  `posted` datetime NOT NULL default '0000-00-00 00:00:00',
+  `acquired` datetime NOT NULL default '0000-00-00 00:00:00',
+  PRIMARY KEY  (`date`,`hour`,`entity_property_1`,`entity_property_2`,`posted`,`acquired`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+INSERT INTO `raw_data_2` VALUES ('2011-06-01',1,10,11,12,13,'2011-06-01 23:23:23','2011-06-01 23:55:57'),('2011-06-01',2,10,11,12,13,'2011-06-01 23:23:23','2011-06-01 23:55:57'),('2011-06-01',2,20,21,22,23,'2011-06-01 23:23:23','2011-06-01 23:55:57');
+
 
 CREATE TABLE `data_report` (
   `id` int(11) NOT NULL auto_increment,
