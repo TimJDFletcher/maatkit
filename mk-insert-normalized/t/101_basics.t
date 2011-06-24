@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 22;
+   plan tests => 25;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -363,6 +363,48 @@ is_deeply(
       [1, 2, 3, 22, 23],
    ],
    'data rows (duplicate key with auto-inc)'
+);
+
+# ###########################################################################
+# Don't allow auto inc column gaps.
+# ###########################################################################
+$sb->load_file("master", "common/t/samples/CopyRowsNormalized/tbls004.sql", "test");
+$dbh->do('use test');
+
+mk_insert_normalized::main(
+   '--source', "F=$cnf,D=test,t=raw_data",
+   '--dest',   "t=data",
+   qw(--databases test --insert-ignore --execute),
+   qw(--no-auto-increment-gaps));
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', undef, undef],
+   ],
+   'data_report rows (no auto inc gaps)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 10, 11],
+      [2, 20, 21],
+   ],
+   'entity rows (no auto inc gaps)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 12, 13],
+      [1, 2, 1, 12, 13],
+      [1, 2, 2, 22, 23],
+   ],
+   'data rows (no auto inc gaps)'
 );
 
 # #############################################################################
