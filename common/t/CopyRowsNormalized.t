@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 40;
+   plan tests => 43;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -117,18 +117,14 @@ sub make_copier {
    $stats = {};
 
    my $copy_rows = new CopyRowsNormalized(
-      src           => $src,
-      dst           => $dst,
-      ColumnMap     => $column_map,
-      Quoter        => $q,
-      TableNibbler  => new TableNibbler(TableParser => $tp, Quoter => $q),
-      stats         => $stats,
-      txn_size      => $args{txn_size} || 1,
-      foreign_keys  => $args{foreign_keys},
-      execute       => defined $args{execute} ? $args{execute} : 1,
-      print         => $args{print},
-      replace       => $args{replace},
-      insert_ignore => $args{insert_ignore},
+      %args,
+      execute      => defined $args{execute} ? $args{execute} : 1,
+      src          => $src,
+      dst          => $dst,
+      ColumnMap    => $column_map,
+      Quoter       => $q,
+      TableNibbler => new TableNibbler(TableParser => $tp, Quoter => $q),
+      stats        => $stats,
    );
 
    return $copy_rows;
@@ -644,7 +640,7 @@ $copy_rows = make_copier(
       ['test', 'data'       ], # parent
    ],
 );
-warn "foo";
+
 $copy_rows->copy();
 
 $rows = $dbh->selectall_arrayref('select * from data_report order by id');
@@ -681,6 +677,81 @@ is_deeply(
    ],
    'data rows (with raw_data_2)'
 );
+
+# ###########################################################################
+# Don't allow auto inc column value gaps.
+# ###########################################################################
+$sb->load_file("master", "$in/tbls005.sql", "test");
+@ARGV = ('-d', 'test', '-t', 'raw_data,data,entity,data_report');
+$o->get_opts();
+$copy_rows = make_copier(
+   auto_increment_gaps => 0,
+   foreign_keys        => 1,
+   insert_ignore       => 1,
+   src_db              => 'test',
+   src_tbl             => 'raw_data',
+   txn_size            => 100,
+   dst_tbls            => [
+      ['test', 'entity'     ], # child2
+      ['test', 'data_report'], # child1
+      ['test', 'data'       ], # parent
+   ],
+);
+
+$copy_rows->copy();
+
+@ARGV = ('-d', 'test', '-t', 'raw_data_2,data,entity,data_report');
+$o->get_opts();
+
+$copy_rows = make_copier(
+   auto_increment_gaps => 0,
+   foreign_keys        => 1,
+   insert_ignore       => 1,
+   src_db              => 'test',
+   src_tbl             => 'raw_data_2',
+   txn_size            => 100,
+   dst_tbls            => [
+      ['test', 'entity'     ], # child2
+      ['test', 'data_report'], # child1
+      ['test', 'data'       ], # parent
+   ],
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-06-01', '2011-06-01 23:23:23', '2011-06-01 23:55:55' ],
+      [2, '2011-06-01', '2011-06-01 23:23:23', '2011-06-01 23:55:57' ],
+   ],
+   'data_report rows (no auto inc gaps)'
+) or print Dumper($rows);
+
+$rows = $dbh->selectall_arrayref('select * from entity order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 10, 11 ],
+      [2, 20, 21 ],
+   ],
+   'entity rows (no auto inc gaps)'
+) or print Dumper($rows);
+
+$rows = $dbh->selectall_arrayref('select * from data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 12, 13],
+      [1, 2, 1, 12, 13],
+      [1, 2, 2, 22, 23],
+      [2, 1, 1, 12, 13],
+      [2, 2, 1, 12, 13],
+      [2, 2, 2, 22, 23],
+   ],
+   'data rows (no auto inc gaps)'
+) or print Dumper($rows);
 
 # #############################################################################
 # Done.

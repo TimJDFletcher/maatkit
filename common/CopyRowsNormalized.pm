@@ -47,14 +47,17 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   Quoter       - <Quoter> object.
 #
 # Optional Arguments:
-#   asc_first     - Ascend only first column of multi-column idx (default true).
-#   asc_only      - Ascend with > instead of >= (default true).
-#   txn_size      - COMMIT after inserting this many rows in each dst table
-#                   (default 1)
-#   print         - Print SQL statements.
-#   execute       - Execute SQL statements.
-#   replace       - REPLACE instead of INSERT.
-#   insert_ignore - INSERT IGNORE.
+#   asc_first           - Ascend only first column of multi-column idx
+#                         (default true).
+#   asc_only            - Ascend with > instead of >= (default true).
+#   txn_size            - COMMIT after inserting this many rows in each
+#                         dst table (default 1).
+#   print               - Print SQL statements.
+#   execute             - Execute SQL statements.
+#   replace             - REPLACE instead of INSERT.
+#   insert_ignore       - INSERT IGNORE.
+#   auto_increment_gaps - Allow gaps in the auto inc col if insert_ignore
+#                         is true (default yes).
 #
 # Returns:
 #   CopyRowsNormalized object
@@ -69,8 +72,11 @@ sub new {
    die "No source table" unless $src->{tbl};
    die "No destination tables" unless $dst->{tbls};
 
-   my $index    = $src->{index}   || 'PRIMARY';
-   my $txn_size = $args{txn_size} || 1;
+   my $index         = $src->{index}   || 'PRIMARY';
+   my $txn_size      = $args{txn_size} || 1;
+   my $auto_inc_gaps = defined $args{auto_increment_gaps}
+                     ? $args{auto_increment_gaps}
+                     : 1;
 
    my $asc = $nibbler->generate_asc_stmt(
       tbl_struct => $src->{tbl}->{tbl_struct},
@@ -129,14 +135,41 @@ sub new {
       my $sth = $dst->{dbh}->prepare($sql);
       $dst_tbl->{insert} = { sth => $sth, cols => $cols };
 
-      if ( $args{foreign_keys} ) {
-         $dst_tbl->{insert}->{last_insert_id} = _make_last_insert_id_callback(
-            %args,
-            dbh  => $dst->{dbh},
-            tbl  => $dst_tbl,
-            cols => $cols,
-         );
+      my $pk = $dst_tbl->{tbl_struct}->{keys}->{PRIMARY};
+      if ( $pk ) {
+         my $auto_inc_col
+            = $dst_tbl->{tbl_struct}->{is_autoinc}->{$pk->{cols}->[0]}
+            ? $pk->{cols}->[0]
+            : undef;
+         MKDEBUG && _d('PRIMARY KEY auto inc col:', $auto_inc_col);
+
+         if ( !$auto_inc_gaps
+              && $auto_inc_col
+              && $args{insert_ignore}
+              && !grep { $_ eq $auto_inc_col } @$cols ) {
+            MKDEBUG && _d('Checking auto inc col before INSERT');
+            my $sql = "SELECT 1 FROM $dst_tbl->{db}.$dst_tbl->{tbl} WHERE "
+                    . join(' AND ', map { "$_=?" } @$cols)
+                    . " LIMIT 1";
+            MKDEBUG && _d($sql);
+            $dst_tbl->{insert}->{check_for_row_sth}
+               = $dst->{dbh}->prepare($sql);
+         }
+
+         if ( $args{foreign_keys} ) {
+            $dst_tbl->{insert}->{last_insert_id}
+               = _make_last_insert_id_callback(
+                  %args,
+                  dbh          => $dst->{dbh},
+                  tbl          => $dst_tbl,
+                  cols         => $cols,
+                  auto_inc_col => $auto_inc_col,
+               );
+         }
       }
+      else {
+         MKDEBUG && _d('Table has no PRIMARY KEY');
+      } 
    }
 
    my $start_txn_sth = $dst->{dbh}->prepare('START TRANSACTION');
@@ -156,165 +189,19 @@ sub new {
    return bless $self, $class;
 }
 
-sub copy {
-   my ( $self, %args ) = @_;
-   my @required_args = qw();
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-
-   my @asc_cols = @{$self->{asc_cols}};
-
-   # Select first chunk of rows, if any, and copy them.  If there are
-   # rows, then $last_row will be defined.  There are no params for
-   # execute because the first sql has no ? placeholders.
-   my $sth      = $self->{first_sth};
-   my $last_row = $self->_copy_rows_in_chunk(sth => $sth);
-
-   # Switch to next sth and while the previous chunk has rows, get
-   # the next chunk of rows and copy them.
-   $sth->finish();
-   $sth = $self->{next_sth};
-   while ( $last_row ) {
-      MKDEBUG && _d('Last row:', Dumper($last_row));
-      $last_row = $self->_copy_rows_in_chunk(
-         sth    => $sth,
-         params => [ @{$last_row}{@asc_cols} ],
-      );
-   }
-
-   MKDEBUG && _d('No more rows');
-   $sth->finish();
-
-   return;
-}
-
-sub _copy_rows_in_chunk {
-   my ( $self, %args ) = @_;
-   my @required_args = qw(sth);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($sth)  = @args{@required_args};
-   my @params = $args{params} ? @{$args{params}} : ();
-
-   my $column_map = $self->{ColumnMap};
-   my $dst_dbh    = $self->{dst}->{dbh};
-   my $dst_tbls   = $self->{dst}->{tbls};
-   my $stats      = $self->{stats};
-   my $print      = $self->{print};
-   my $execute    = $self->{execute};
-
-   $self->{chunkno}++;   
-   $stats->{chunks}++ if $stats;
-
-   MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
-   MKDEBUG && _d($sth->{Statement});
-   if ( $print ) {
-      print $sth->{Statement}, "\n" if $print;
-      print "-- Bind values: "
-         . join(', ', map { defined $_ ? $_ : 'NULL' } @params)
-         . "\n";
-   }
-   if ( $execute ) {
-      $sth->execute(@params);
-   }
-
-   MKDEBUG && _d('Got', $sth->rows(), 'rows');
-   return unless $sth->rows();
-
-   # START TRANSACTION
-   if ( $self->{start_txn_sth} ) {
-      MKDEBUG && _d($self->{start_txn_sth}->{Statement});
-      if ( $print ) {
-         print $self->{start_txn_sth}->{Statement}, "\n";
-      }
-      if ( $execute ) {
-         $self->{start_txn_sth}->execute();
-         $stats->{start_transaction}++ if $stats;
-      }
-   }
-
-   # Fetch and INSERT rows into destination tables.
-   my $inserts = $self->{inserts};
-   my $last_row;
-   ROW:
-   while ( $sth->{Active} && defined(my $row = $sth->fetchrow_hashref()) ) {
-      $stats->{rows_selected}++ if $stats;
-      INSERT:
-      foreach my $dst_tbl ( @$dst_tbls ) {
-         MKDEBUG && _d('Inserting row into', $dst_tbl->{db}, $dst_tbl->{tbl});
-         my $values = $column_map->map_values(
-            dbh => $dst_dbh,
-            tbl => $dst_tbl,
-            row => $row,
-         );
-
-         my $insert = $dst_tbl->{insert};
-         MKDEBUG && _d($insert->{sth}->{Statement});
-         if ( $print ) {
-            print $insert->{sth}->{Statement}, "\n";
-            print "-- Bind values: "
-               . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
-               . "\n";
-         }
-         if ( $execute ) {
-            $insert->{sth}->execute(@$values);
-            $stats->{rows_inserted}++ if $stats;
-         }
-
-         if ( my $last_insert_id = $insert->{last_insert_id} ) {
-            $dst_tbl->{last_insert_id} = $last_insert_id->(
-               dbh   => $dst_dbh,
-               tbl   => $dst_tbl,
-               row   => $row,
-               sth   => $insert->{sth},
-               stats => $stats,
-            );
-            MKDEBUG && _d('Last insert id:',
-               Dumper($dst_tbl->{last_insert_id}));
-         }
-
-         $last_row = $row;
-      }
-   }
-
-   # COMMIT
-   if ( $self->{commit_sth} ) {
-      MKDEBUG && _d($self->{commit_sth}->{Statement});
-      if ( $print ) {
-         print $self->{commit_sth}->{Statement}, "\n";
-      }
-      if ( $execute ) {
-         $self->{commit_sth}->execute();
-         $stats->{commit}++ if $stats;
-      }
-   }
-
-   return $last_row;
-}
-
-sub cleanup {
-   my ( $self, %args ) = @_;
-   # Nothing to cleanup, but caller is still going to call us.
-   return;
-}
-
 sub _make_last_insert_id_callback {
    my ( %args ) = @_;
    my @required_args = qw(tbl cols);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($tbl, $cols) = @args{@required_args};
+   my ($tbl, $cols)   = @args{@required_args};
+   my ($auto_inc_col) = $args{auto_inc_col};
    MKDEBUG && _d('Making callback to get last insert id from table',
       $tbl->{db}, $tbl->{tbl});
 
    my $tbl_pk = $tbl->{tbl_struct}->{keys}->{PRIMARY};
-   my ($auto_inc_col)
-      = grep { $tbl->{tbl_struct}->{is_autoinc}->{$_} }
-        @{$tbl_pk->{cols}};
-   MKDEBUG && _d('Auto inc col:', $auto_inc_col);
+
 
    my $callback;
    if ( $auto_inc_col ) {
@@ -407,6 +294,185 @@ sub _make_last_insert_id_callback {
    }
 
    return $callback;
+}
+
+sub copy {
+   my ( $self, %args ) = @_;
+   my @required_args = qw();
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+
+   my @asc_cols = @{$self->{asc_cols}};
+
+   # Select first chunk of rows, if any, and copy them.  If there are
+   # rows, then $last_row will be defined.  There are no params for
+   # execute because the first sql has no ? placeholders.
+   my $sth      = $self->{first_sth};
+   my $last_row = $self->_copy_rows_in_chunk(sth => $sth);
+
+   # Switch to next sth and while the previous chunk has rows, get
+   # the next chunk of rows and copy them.
+   $sth->finish();
+   $sth = $self->{next_sth};
+   while ( $last_row ) {
+      MKDEBUG && _d('Last row:', Dumper($last_row));
+      $last_row = $self->_copy_rows_in_chunk(
+         sth    => $sth,
+         params => [ @{$last_row}{@asc_cols} ],
+      );
+   }
+
+   MKDEBUG && _d('No more rows');
+   $sth->finish();
+
+   return;
+}
+
+sub _copy_rows_in_chunk {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(sth);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($sth)  = @args{@required_args};
+   my @params = $args{params} ? @{$args{params}} : ();
+
+   my $column_map = $self->{ColumnMap};
+   my $dst_dbh    = $self->{dst}->{dbh};
+   my $dst_tbls   = $self->{dst}->{tbls};
+   my $stats      = $self->{stats};
+   my $print      = $self->{print};
+   my $execute    = $self->{execute};
+
+   $self->{chunkno}++;   
+   $stats->{chunks}++ if $stats;
+
+   MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
+   MKDEBUG && _d($sth->{Statement});
+   if ( $print ) {
+      print $sth->{Statement}, "\n" if $print;
+      print "-- Bind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @params)
+         . "\n";
+   }
+   if ( $execute ) {
+      $sth->execute(@params);
+   }
+
+   MKDEBUG && _d('Got', $sth->rows(), 'rows');
+   return unless $sth->rows();
+
+   # START TRANSACTION
+   if ( $self->{start_txn_sth} ) {
+      MKDEBUG && _d($self->{start_txn_sth}->{Statement});
+      if ( $print ) {
+         print $self->{start_txn_sth}->{Statement}, "\n";
+      }
+      if ( $execute ) {
+         $self->{start_txn_sth}->execute();
+         $stats->{start_transaction}++ if $stats;
+      }
+   }
+
+   # Fetch and INSERT rows into destination tables.
+   my $inserts = $self->{inserts};
+   my $last_row;
+   SOURCE_ROW:
+   while ( $sth->{Active} && defined(my $row = $sth->fetchrow_hashref()) ) {
+      $stats->{rows_selected}++ if $stats;
+
+      DEST_TABLE:
+      foreach my $dst_tbl ( @$dst_tbls ) {
+         MKDEBUG && _d('Inserting row into', $dst_tbl->{db}, $dst_tbl->{tbl});
+         my $insert = $dst_tbl->{insert};
+         my $values = $column_map->map_values(
+            dbh => $dst_dbh,
+            tbl => $dst_tbl,
+            row => $row,
+         );
+
+         # ##################################################################
+         # Check if the row already exists in the dest table.
+         # ##################################################################
+         my $insert_row = 1;
+         if ( my $check_for_row_sth = $insert->{check_for_row_sth} ) {
+            MKDEBUG && _d($check_for_row_sth->{Statement});
+            my $cols = $insert->{cols};
+            if ( $print ) {
+               print $check_for_row_sth->{Statement}, "\n";
+               print "-- Bind values: "
+                  . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
+                  . "\n";
+            }
+
+            if ( $execute ) {
+               $check_for_row_sth->execute(@$values);
+               my $row = $check_for_row_sth->fetchrow_arrayref();
+               $check_for_row_sth->finish();
+
+               if ( $row && defined $row->[0] ) {
+                  MKDEBUG && _d('Row already exists in dest table');
+                  $insert_row = 0;
+               }
+            }
+         }
+
+         # ##################################################################
+         # Insert the source row into the dest table.
+         # ##################################################################
+         if ( $insert_row ) {
+            MKDEBUG && _d($insert->{sth}->{Statement});
+            if ( $print ) {
+               print $insert->{sth}->{Statement}, "\n";
+               print "-- Bind values: "
+                  . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
+                  . "\n";
+            }
+            if ( $execute ) {
+               $insert->{sth}->execute(@$values);
+               $stats->{rows_inserted}++ if $stats;
+            }
+         }
+
+         # ##################################################################
+         # Select the row back from the dest table to get its last insert id.
+         # ##################################################################
+         if ( my $last_insert_id = $insert->{last_insert_id} ) {
+            $dst_tbl->{last_insert_id} = $last_insert_id->(
+               dbh   => $dst_dbh,
+               tbl   => $dst_tbl,
+               row   => $row,
+               sth   => $insert->{sth},
+               stats => $stats,
+            );
+            MKDEBUG && _d('Last insert id:',
+               Dumper($dst_tbl->{last_insert_id}));
+         }
+
+         $last_row = $row;
+      } # DEST_TABLE
+   } # SOURCE_ROW
+
+   # COMMIT
+   if ( $self->{commit_sth} ) {
+      MKDEBUG && _d($self->{commit_sth}->{Statement});
+      if ( $print ) {
+         print $self->{commit_sth}->{Statement}, "\n";
+      }
+      if ( $execute ) {
+         $self->{commit_sth}->execute();
+         $stats->{commit}++ if $stats;
+      }
+   }
+
+   return $last_row;
+}
+
+sub cleanup {
+   my ( $self, %args ) = @_;
+   # Nothing to cleanup, but caller is still going to call us.
+   return;
 }
 
 sub _d {
