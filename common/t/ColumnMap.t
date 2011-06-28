@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 10;
+use Test::More tests => 11;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -79,6 +79,7 @@ sub make_column_map {
       Schema          => $schema,
       constant_values => $args{constant_values},
       ignore_columns  => $args{ignore_columns},
+      column_map      => $args{column_map},
    );
 }
 
@@ -184,6 +185,34 @@ is_deeply(
       '?',      # acquired, from constant value
    ],
    "No value placeholder for ignored column"
+);
+
+# ############################################################################
+# Manual column map.
+# ############################################################################
+make_column_map(
+   files           => ["$in/dump002.txt"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data',
+   foreign_keys    => 1,
+   constant_values => {
+      posted   => 'NOW()',
+      acquired => '',
+   },
+   column_map      => [
+      { src_col => 'date',
+        dst_col => { db=>'test', tbl=>'data_report', col=>'posted' },
+      },
+      { src_col => 'hour',
+        dst_col => { db=>'test', tbl=>'data_report', col=>'acquired' },
+      }
+   ],
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
+   [qw(posted acquired)],
+   "Manual column map"
 );
 
 # #############################################################################
