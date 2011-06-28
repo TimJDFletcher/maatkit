@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 25;
+   plan tests => 28;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -405,6 +405,54 @@ is_deeply(
       [1, 2, 2, 22, 23],
    ],
    'data rows (no auto inc gaps)'
+);
+
+# ###########################################################################
+# Manual --column-map.
+# ###########################################################################
+$sb->load_file("master", "mk-insert-normalized/t/samples/col-map.sql");
+$dbh->do('use test');
+
+ok(
+   no_diff(
+      sub { mk_insert_normalized::main(
+         '--source', "F=$cnf,D=test,t=a",
+         '--dest',   "t=z",
+         qw(--ignore-columns id),
+         '--column-map', "$trunk/mk-insert-normalized/t/samples/col-map.txt",
+         qw(--databases test --print --execute)) },
+      "$out/col-map-output.txt",
+      sed => [
+         "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
+         "-e 's/user:[a-z]*/user:test/g' -i.bak",
+      ],
+   ),
+   "--column-map"
+);
+
+$rows = $dbh->selectall_arrayref('select * from y order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1],
+      [2, 2, 2],
+      [3, 3, 3],
+   ],
+   'y rows (--column-map)'
+);
+
+# Both y and z have a col2, but only y.col2 gets the value from a.col2 because
+# of the manual column map "col2 test.y.col2 !".  So z.col2 should use its
+# default value: 42
+$rows = $dbh->selectall_arrayref('select id, cola, col2, three from z order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 42, 1],
+      [2, 2, 42, 2],
+      [3, 3, 42, 3],
+   ],
+   'z rows (--column-map)'
 );
 
 # #############################################################################

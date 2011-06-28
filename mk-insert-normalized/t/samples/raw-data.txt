@@ -7,6 +7,8 @@
 --   test.data_report
 --   test.entity
 --   test.data
+-- Column test.raw_data.posted maps to constant value 2011-06-15
+-- Column test.raw_data.acquired maps to constant value 2011-06-14
 -- Column test.raw_data.date maps to column test.data_report.date
 -- Column test.raw_data.hour maps to column test.data.hour
 -- Foreign key column test.data.data_report maps to column test.data_report.id
@@ -15,8 +17,6 @@
 -- Column test.raw_data.entity_property_2 maps to column test.entity.entity_property_2
 -- Column test.raw_data.data_1 maps to column test.data.data_1
 -- Column test.raw_data.data_2 maps to column test.data.data_2
--- Column test.raw_data.posted maps to constant value 2011-06-15
--- Column test.raw_data.acquired maps to constant value 2011-06-14
 -- SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) LIMIT 1
 -- SELECT /*!40001 SQL_NO_CACHE */ date, hour, entity_property_1, entity_property_2, data_1, data_2 FROM `test`.`raw_data` FORCE INDEX(`PRIMARY`) WHERE ((`date` > ?)) LIMIT 1
 -- INSERT INTO `test`.`data_report` (date, posted, acquired) VALUES (?, ?, ?) /* CopyRowsNormalized src_tbl:test.raw_data txn_size:1 pid:0 user:test */

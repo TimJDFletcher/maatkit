@@ -3375,7 +3375,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7563
+# ColumnMap package 7578
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3403,8 +3403,59 @@ sub new {
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
+   my ($src_tbl, $schema) = @args{@required_args};
 
-   my $src_tbl    = $args{src_tbl};
+   my %map_once;
+   if ( my $column_map = $args{column_map} ) {
+      foreach my $map ( @$column_map ) {
+         MKDEBUG && _d('Mapping manual column', $map->{src_col});
+         if ( !$src_tbl->{tbl_struct}->{is_col}->{$map->{src_col}} ) {
+            die "Invalid column map: column $map->{src_col} "
+               . "does not exist in table $src_tbl->{db}.$src_tbl->{tbl}";
+            next;
+         }
+         my %dst_col = %{$map->{dst_col}};
+         if ( !$dst_col{db} || !$dst_col{tbl} || !$dst_col{col} ) {
+            die "Invalid column map: the destination column "
+               . join('.',
+                  map { defined $dst_col{$_} ? $dst_col{$_} : '' }
+                  qw(db tbl col))
+               . " is missing a part for source column $map->{src_col}";
+            next;
+         }
+         my $dst_tbls = $schema->find_column(%dst_col);
+         if ( !$dst_tbls || !@$dst_tbls ) {
+            die "Invalid column map: column $dst_col{col} "
+               . "does not exist in table $dst_col{db}.$dst_col{tbl}";
+            next;
+         }
+
+         if ( $map->{map_once} ) {
+            $map_once{$map->{src_col}} = 1;
+         }
+
+         _map_column(
+            %args,
+            src_col  => $map->{src_col},
+            map_once => \%map_once,
+            dst_tbl  => $dst_tbls->[0],
+            dst_col  => $dst_col{col},
+         );
+      }
+   }
+
+   if ( my $const_vals = $args{constant_values} ) {
+      foreach my $src_col ( keys %$const_vals ) {
+         MKDEBUG && _d('Mapping constant column', $src_col);
+         _map_column(
+            %args,
+            src_col  => $src_col,
+            map_once => \%map_once,
+            val      => $const_vals->{$src_col},
+         );
+      }
+   }
+
    my $ignore_col = $args{ignore_columns};
    foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
       if ( $ignore_col->{$src_col} ) {
@@ -3412,18 +3463,11 @@ sub new {
          next;
       }
       MKDEBUG && _d('Mapping column', $src_col);
-      _map_column(%args, src_col => $src_col);
-   }
-
-   if ( my $const_vals = $args{constant_values} ) {
-      foreach my $const_col ( keys %$const_vals ) {
-         MKDEBUG && _d('Mapping constant column', $const_col);
-         _map_column(
-            %args,
-            src_col => $const_col,
-            val     => $const_vals->{$const_col},
-         );
-      }
+      _map_column(
+         %args,
+         src_col  => $src_col,
+         map_once => \%map_once,
+      );
    }
 
    my $self = {
@@ -3440,44 +3484,79 @@ sub _map_column {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($src_tbl, $src_col, $schema) = @args{@required_args};
-   my $val = $args{val};
 
-   my $dst_tbls = $schema->find_column(
-      col    => $src_col,
-      ignore => [ $src_tbl ],
-   );
-
-   if ( !$dst_tbls || !@$dst_tbls ) {
-      MKDEBUG && _d('Column', $src_col, 'does not map');
+   if ( $args{map_once}
+        && $args{map_once}->{$src_col}
+        && $src_tbl->{mapped_columns}->{$src_col} ) {
+      MKDEBUG && _d('Column', $src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+         'already mapped');
       return;
    }
 
-   foreach my $dst_tbl ( @$dst_tbls ) {
-      $dst_tbl->{mapped_columns}->{$src_col}++;
+   my ($dst_tbl, $dst_col) = @args{qw(dst_tbl dst_col)};
+   if ( $dst_tbl && $dst_col ) {
+      if ( $dst_tbl->{mapped_columns}->{$dst_col}++ ) {
+         MKDEBUG && _d('Column', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col,
+            'already mapped');
+         next;
+      }
 
-      if ( defined $val ) {
-         MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-            'maps to constant value', $val);
-         $dst_tbl->{value_for}->{$src_col} = $val;
-         if ( $args{print} ) {
-            print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
-                . "maps to constant value $val\n";
-         }
+      MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+         'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col);
+      if ( $args{print} ) {
+         print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
+             . "maps to column "
+             . "$dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col\n";
       }
-      else {
-         MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-            'maps to value from',
-            $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
-         if ( $args{print} ) {
-            print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
-                . "maps to column "
-                . "$dst_tbl->{db}.$dst_tbl->{tbl}.$src_col\n";
-         }
-      }
+
+      push @{$dst_tbl->{value_for}->{$dst_col}}, $src_col;
 
       if ( $dst_tbl->{fk_struct} ) {
          _map_fk_columns(%args, tbl => $dst_tbl);
       } 
+   }
+   else {
+      my $dst_tbls = $schema->find_column(
+         col    => $src_col,
+         ignore => [ $src_tbl ],
+      );
+
+      if ( !$dst_tbls || !@$dst_tbls ) {
+         MKDEBUG && _d('Column', $src_col, 'does not map');
+         return;
+      }
+
+      my $val = $args{val};
+      foreach my $dst_tbl ( @$dst_tbls ) {
+         if ( $dst_tbl->{mapped_columns}->{$src_col}++ ) {
+            MKDEBUG && _d('Column', $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col,
+               'already mapped');
+            next;
+         }
+
+         if ( defined $val ) {
+            MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+               'maps to constant value', $val);
+            $dst_tbl->{value_for}->{$src_col} = $val;
+            if ( $args{print} ) {
+               print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
+                   . "maps to constant value $val\n";
+            }
+         }
+         else {
+            MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
+               'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
+            if ( $args{print} ) {
+               print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
+                   . "maps to column "
+                   . "$dst_tbl->{db}.$dst_tbl->{tbl}.$src_col\n";
+            }
+         }
+
+         if ( $dst_tbl->{fk_struct} ) {
+            _map_fk_columns(%args, tbl => $dst_tbl);
+         } 
+      }
    }
 
    $src_tbl->{mapped_columns}->{$src_col}++;
@@ -3640,10 +3719,16 @@ sub map_values {
          next COLUMN;
       }
 
-      if ( ref $val ) {
+      if ( ref $val eq 'HASH' ) {
          MKDEBUG && _d('Value for', $col, 'is a fetched row');
          my $fetched_row = $self->_fetch_row(%args, fetch_row_params => $val);
          @{$row}{keys %$fetched_row} = values %$fetched_row;
+      }
+      elsif ( ref $val eq 'ARRAY' ) {
+         map {
+            MKDEBUG && _d('Value for', $col, 'is source column', $_);
+            $row->{$col} = $row->{$_}
+         } @$val;
       }
       else {
          MKDEBUG && _d('Value for', $col, 'is constant');
@@ -4226,6 +4311,8 @@ sub main {
       }
       open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
       while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
          MKDEBUG && _d($line);
          my ($col, $val) = $line =~ m/^\s*([^=]+)=(.+)$/;
          MKDEBUG && _d('col:', $col, 'val:', $val);
@@ -4233,6 +4320,32 @@ sub main {
          if ( $o->get('print') ) {
             print "--   $col=" . (defined $val ? $val : '(undefined)') . "\n";
          }
+      }
+      close $fh;
+   }
+   
+   # ########################################################################
+   # Parse column map file.
+   # ########################################################################
+   my @manual_column_map;
+   if ( my $file = $o->get('column-map') ) {
+      MKDEBUG && _d('Reading column map from', $file);
+      open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+      while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
+         MKDEBUG && _d($line);
+         my ($src_col, $dst_col, $map_once)
+            = $line =~ m/^\s*(\S+)\s+(\S+)(?:\s+(!))?/;
+         MKDEBUG && _d('src col:', $src_col, 'dest col:', $dst_col,
+            'map once:', $map_once);
+         my ($db, $tbl, $col) = split /\./, $dst_col;
+         my $map = {
+            src_col  => $src_col,
+            map_once => ($map_once || '') eq '!' ? 1 : 0,
+            dst_col  => { db=>$db, tbl=>$tbl, col=>$col },
+         };
+         push @manual_column_map, $map;
       }
       close $fh;
    }
@@ -4284,6 +4397,7 @@ sub main {
       Schema          => $schema,
       constant_values => $constant_values,
       ignore_columns  => $o->get('ignore-columns'),
+      column_map      => \@manual_column_map,
       print           => $o->get('print'),
    );
    foreach my $dst_tbl ( @dst_tbls ) {
@@ -4652,6 +4766,34 @@ be chunked with SELECT statements like,
 
 The C<columns> and C<?> values are determined automatically.
 
+=item --column-map
+
+type: string
+
+File with manual L<"--source"> column to L<"--dest"> column mappings.
+By default the tool maps source table columns to destination table columns
+with the same name, or it uses L<"--constant-values">.  You can map source
+to destination columns manually in a file with one line for each mapping
+like:
+
+   foo  db.tbl.bar
+
+That maps column C<foo> in the L<"--source"> table to column C<bar> in table
+C<db.tbl>.  The destination column must specify a database and table and
+cannot be backtick (`) quoted.  Whitespace around and between the values is
+ignored, so neither column name can contain spaces.
+
+Since normally a L<"--source"> columnn can map to many L<"--dest"> columns,
+you can specify a third value after the destination column to prevent the
+specified source column from mapping to anywhere else:
+
+   foo  db.tbl.bar  !
+
+The exclamation mark makes L<"--source"> column C<foo> map only once to
+L<"--dest"> column C<bar>.  This is helpful if table C<db.tbl> also has
+a column named C<foo> because without the exclamation mark, C<foo> will
+map manually to C<db.tbl.bar> and then map automatically to C<db.tb.foo>.
+
 =item --config
 
 type: Array
@@ -4674,6 +4816,8 @@ not need to be quoted unless quotes are part of the actual value.
 
 If L<"--print"> is specified, then these parsed column-value pairs will be
 printed.
+
+L<"--constant-values"> are mapped after manual L<"--column-map"> values.
 
 =item --databases
 
