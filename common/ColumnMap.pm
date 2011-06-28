@@ -73,13 +73,13 @@ sub new {
       foreach my $map ( @$column_map ) {
          MKDEBUG && _d('Mapping manual column', $map->{src_col});
          if ( !$src_tbl->{tbl_struct}->{is_col}->{$map->{src_col}} ) {
-            warn "Invalid column map: column $map->{src_col} "
+            die "Invalid column map: column $map->{src_col} "
                . "does not exist in table $src_tbl->{db}.$src_tbl->{tbl}";
             next;
          }
          my %dst_col = %{$map->{dst_col}};
          if ( !$dst_col{db} || !$dst_col{tbl} || !$dst_col{col} ) {
-            warn "Invalid column map: the destination column "
+            die "Invalid column map: the destination column "
                . join('.',
                   map { defined $dst_col{$_} ? $dst_col{$_} : '' }
                   qw(db tbl col))
@@ -88,7 +88,7 @@ sub new {
          }
          my $dst_tbls = $schema->find_column(%dst_col);
          if ( !$dst_tbls || !@$dst_tbls ) {
-            warn "Invalid column map: column $dst_col{col} "
+            die "Invalid column map: column $dst_col{col} "
                . "does not exist in table $dst_col{db}.$dst_col{tbl}";
             next;
          }
