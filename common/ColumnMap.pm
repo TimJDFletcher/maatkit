@@ -171,6 +171,12 @@ sub _map_column {
              . "maps to column "
              . "$dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col\n";
       }
+
+      push @{$dst_tbl->{value_for}->{$dst_col}}, $src_col;
+
+      if ( $dst_tbl->{fk_struct} ) {
+         _map_fk_columns(%args, tbl => $dst_tbl);
+      } 
    }
    else {
       # See if the column maps directly, src_tbl.colX -> dst_tbl.colX.
@@ -406,10 +412,16 @@ sub map_values {
          next COLUMN;
       }
 
-      if ( ref $val ) {
+      if ( ref $val eq 'HASH' ) {
          MKDEBUG && _d('Value for', $col, 'is a fetched row');
          my $fetched_row = $self->_fetch_row(%args, fetch_row_params => $val);
          @{$row}{keys %$fetched_row} = values %$fetched_row;
+      }
+      elsif ( ref $val eq 'ARRAY' ) {
+         map {
+            MKDEBUG && _d('Value for', $col, 'is source column', $_);
+            $row->{$col} = $row->{$_}
+         } @$val;
       }
       else {
          MKDEBUG && _d('Value for', $col, 'is constant');

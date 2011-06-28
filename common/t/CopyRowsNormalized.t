@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 43;
+   plan tests => 45;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -106,6 +106,8 @@ sub make_copier {
       src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
       Schema          => $schema,
       constant_values => $args{constant_values},
+      column_map      => $args{column_map},
+      ignore_columns  => $args{ignore_columns},
    );
    foreach my $dst_tbl ( @dst_tbls ) {
       if ( !$column_map->mapped_columns($dst_tbl) ) {
@@ -752,6 +754,62 @@ is_deeply(
    ],
    'data rows (no auto inc gaps)'
 ) or print Dumper($rows);
+
+# ###########################################################################
+# Manually mapped columns.
+# ###########################################################################
+$sb->load_file("master", "mk-insert-normalized/t/samples/col-map.sql");
+@ARGV = ('-d', 'test', '-t', 'a,y,z');
+$o->get_opts();
+
+$copy_rows = make_copier(
+   foreign_keys        => 1,
+   src_db              => 'test',
+   src_tbl             => 'a',
+   ignore_columns      => {id=>1},
+   column_map          => [
+      { src_col  => 'col1',
+        map_once => 0,
+        dst_col  => { db => 'test', tbl => 'z', col => 'cola' },
+      },
+      { src_col  => 'col3',
+        map_once => 0,
+        dst_col  => { db => 'test', tbl => 'z', col => 'three' },
+      },
+      { src_col  => 'col2',
+        map_once => 1,
+        dst_col  => { db => 'test', tbl => 'y', col => 'col2' },
+      }
+   ],
+   dst_tbls            => [
+      ['test', 'y'],
+      ['test', 'z'],
+   ],
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from test.y order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1],
+      [2, 2, 2],
+      [3, 3, 3],
+   ],
+   'y rows (--column-map)'
+);
+
+$rows = $dbh->selectall_arrayref('select id, cola, col2, three from test.z order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 42, 1],
+      [2, 2, 42, 2],
+      [3, 3, 42, 3],
+   ],
+   'z rows (--column-map)'
+);
 
 # #############################################################################
 # Done.
