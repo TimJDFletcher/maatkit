@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 11;
+use Test::More tests => 12;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -211,8 +211,34 @@ make_column_map(
 
 is_deeply(
    $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(posted acquired)],
+   [qw(date posted acquired)],
    "Manual column map"
+);
+
+make_column_map(
+   files           => ["$in/dump002.txt"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data',
+   foreign_keys    => 1,
+   constant_values => {
+      posted   => 'NOW()',
+      acquired => '',
+   },
+   column_map      => [
+      { src_col  => 'date',
+        map_once => 1,  # XXX
+        dst_col  => { db=>'test', tbl=>'data_report', col=>'posted' },
+      },
+      { src_col => 'hour',
+        dst_col => { db=>'test', tbl=>'data_report', col=>'acquired' },
+      }
+   ],
+);
+
+is_deeply(
+   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
+   [qw(posted acquired)],
+   "Manual column map once"
 );
 
 # #############################################################################

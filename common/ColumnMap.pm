@@ -68,6 +68,7 @@ sub new {
    }
    my ($src_tbl, $schema) = @args{@required_args};
 
+   my %map_once;
    if ( my $column_map = $args{column_map} ) {
       foreach my $map ( @$column_map ) {
          MKDEBUG && _d('Mapping manual column', $map->{src_col});
@@ -91,11 +92,17 @@ sub new {
                . "does not exist in table $dst_col{db}.$dst_col{tbl}";
             next;
          }
+
+         if ( $map->{map_once} ) {
+            $map_once{$map->{src_col}} = 1;
+         }
+
          _map_column(
             %args,
-            src_col => $map->{src_col},
-            dst_tbl => $dst_tbls->[0],
-            dst_col => $dst_col{col},
+            src_col  => $map->{src_col},
+            map_once => \%map_once,
+            dst_tbl  => $dst_tbls->[0],
+            dst_col  => $dst_col{col},
          );
       }
    }
@@ -105,8 +112,9 @@ sub new {
          MKDEBUG && _d('Mapping constant column', $src_col);
          _map_column(
             %args,
-            src_col => $src_col,
-            val     => $const_vals->{$src_col},
+            src_col  => $src_col,
+            map_once => \%map_once,
+            val      => $const_vals->{$src_col},
          );
       }
    }
@@ -118,7 +126,11 @@ sub new {
          next;
       }
       MKDEBUG && _d('Mapping column', $src_col);
-      _map_column(%args, src_col => $src_col);
+      _map_column(
+         %args,
+         src_col  => $src_col,
+         map_once => \%map_once,
+      );
    }
 
    my $self = {
@@ -136,7 +148,9 @@ sub _map_column {
    }
    my ($src_tbl, $src_col, $schema) = @args{@required_args};
 
-   if ( $src_tbl->{mapped_columns}->{$src_col} ) {
+   if ( $args{map_once}
+        && $args{map_once}->{$src_col}
+        && $src_tbl->{mapped_columns}->{$src_col} ) {
       MKDEBUG && _d('Column', $src_tbl->{db}, $src_tbl->{tbl}, $src_col,
          'already mapped');
       return;
@@ -151,7 +165,7 @@ sub _map_column {
       }
 
       MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-         'manually maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col);
+         'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col);
       if ( $args{print} ) {
          print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
              . "maps to column "
