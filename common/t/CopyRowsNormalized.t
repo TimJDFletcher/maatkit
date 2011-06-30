@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 45;
+   plan tests => 49;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -809,6 +809,76 @@ is_deeply(
       [3, 3, 42, 3],
    ],
    'z rows (--column-map)'
+);
+
+# ###########################################################################
+# Manually mapped columns with duplicate row name.
+# ###########################################################################
+$sb->load_file("master", "mk-insert-normalized/t/samples/map-name.sql");
+@ARGV = ('-d', 'test');
+$o->get_opts();
+
+$copy_rows = make_copier(
+   foreign_keys        => 1,
+   txn_size            => 100,
+   insert_ignore       => 1,
+   auto_increment_gaps => 0,
+   src_db              => 'test',
+   src_tbl             => 'raw_data',
+   column_map          => [
+      { src_col  => 'name_1',
+        map_once => 1,
+        dst_col  => { db => 'test', tbl => 'entity_1', col => 'name' },
+      },
+      { src_col  => 'name_2',
+        map_once => 1,
+        dst_col  => { db => 'test', tbl => 'entity_2', col => 'name' },
+      },
+   ],
+   dst_tbls            => [
+      ['test', 'entity_2'],
+      ['test', 'data_report'],
+      ['test', 'entity_1'],
+      ['test', 'data'],
+   ],
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from test.entity_1 order by id');
+is_deeply(
+   $rows,
+   [ [1, 'a'], [2, 'b'] ],
+   'entity_1 rows (duplicate `name` column)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.entity_2 order by id');
+is_deeply(
+   $rows,
+   [ [1, 'x'], [2, 'y'] ],
+   'entity_2 rows (duplicate `name` column)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data_report order by id');
+is_deeply(
+   $rows,
+   [ [1, '2011-06-01','2011-06-01 23:55:58'] ],
+   'data_report rows (duplicate `name` column)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data order by data_report, hour, entity_1, entity_2');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 1, 1, 27],
+      [1, 2, 1, 1, 27],
+      [1, 3, 2, 2, 23],
+      [1, 4, 1, 1, 27],
+      [1, 4, 2, 1, 23],
+      [1, 4, 2, 2, 23],
+      [1, 5, 2, 2, 29],
+   ],
+   'data rows (duplicate `name` column)'
 );
 
 # #############################################################################

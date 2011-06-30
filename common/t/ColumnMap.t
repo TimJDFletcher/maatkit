@@ -123,19 +123,27 @@ my $entity_tbl      = $schema->get_table('test', 'entity');
 is_deeply(
    $column_map->mapped_values($schema->get_table('test', 'data')),
    [
-      {
-         cols  => { data_report => 'id' },
-         tbl   => $data_report_tbl,
-         where => 'last_insert_id',
-      },
-      '?',
-      {
-         cols  => { entity => 'id' },
-         tbl   => $entity_tbl,
-         where => 'last_insert_id',
-      },
-      '?',
-      '?',
+      [ ColumnMap::FETCHED_ROW, 
+        { cols  => { data_report => 'id' },
+          tbl   => $data_report_tbl,
+          where => 'last_insert_id',
+        },
+      ],
+      [ ColumnMap::SOURCE_ROW_COLUMN,
+        'hour',
+      ],
+      [ ColumnMap::FETCHED_ROW, 
+        { cols  => { entity => 'id' },
+          tbl   => $entity_tbl,
+          where => 'last_insert_id',
+        },
+      ],
+      [ ColumnMap::SOURCE_ROW_COLUMN,
+        'data_1',
+      ],
+      [ ColumnMap::SOURCE_ROW_COLUMN,
+        'data_2',
+      ],
    ],
    "Mapped values with fk fetch backs"
 );
@@ -143,9 +151,15 @@ is_deeply(
 is_deeply(
    $column_map->mapped_values($schema->get_table('test', 'data_report')),
    [
-      '?',      # date, from raw_data.date
-      'NOW()',  # posted, from constant value
-      '?',      # acquired, from constant value
+      [ ColumnMap::SOURCE_ROW_COLUMN,
+        'date',
+      ],
+      [ ColumnMap::CONSTANT_VALUE,
+        'NOW()',
+      ],
+      [ ColumnMap::CONSTANT_VALUE,
+        '',
+      ],
    ],
    "Mapped constant values"
 );
@@ -181,8 +195,12 @@ is_deeply(
 is_deeply(
    $column_map->mapped_values($schema->get_table('test', 'data_report')),
    [
-      'NOW()',  # posted, from constant value
-      '?',      # acquired, from constant value
+      [ ColumnMap::CONSTANT_VALUE,
+        'NOW()',
+      ],
+      [ ColumnMap::CONSTANT_VALUE,
+        '',
+      ]
    ],
    "No value placeholder for ignored column"
 );

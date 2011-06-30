@@ -42,6 +42,10 @@ $Data::Dumper::Quotekeys = 0;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
+use constant SOURCE_ROW_COLUMN => 1;
+use constant FETCHED_ROW       => 2;
+use constant CONSTANT_VALUE    => 3;
+
 # Sub: new
 #
 # Parameters:
@@ -171,8 +175,7 @@ sub _map_column {
              . "maps to column "
              . "$dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col\n";
       }
-
-      push @{$dst_tbl->{value_for}->{$dst_col}}, $src_col;
+      $dst_tbl->{value_for}->{$dst_col} = [SOURCE_ROW_COLUMN, $src_col];
 
       if ( $dst_tbl->{fk_struct} ) {
          _map_fk_columns(%args, tbl => $dst_tbl);
@@ -205,7 +208,7 @@ sub _map_column {
          if ( defined $val ) {
             MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
                'maps to constant value', $val);
-            $dst_tbl->{value_for}->{$src_col} = $val;
+            $dst_tbl->{value_for}->{$src_col} = [CONSTANT_VALUE, $val];
             if ( $args{print} ) {
                print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
                    . "maps to constant value $val\n";
@@ -214,9 +217,7 @@ sub _map_column {
          else {
             MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
                'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
-            # We don't need to set $dst_tbl->{value_for} in this case because
-            # the value will come from same column name in the source table
-            # which will be $row->{$src_col} in map_values().
+            $dst_tbl->{value_for}->{$src_col} = [SOURCE_ROW_COLUMN, $src_col];
             if ( $args{print} ) {
                print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
                    . "maps to column "
@@ -285,7 +286,7 @@ sub _map_fk_columns {
          # the source table and part from the parent table.
          if ( $tbl->{value_for}->{$fk_col} ) {
             MKDEBUG && _d('Foreign key column', $fk_col, 'already mapped to',
-               $tbl->{value_for}->{$fk_col});
+               @{$tbl->{value_for}->{$fk_col}});
             next FK_COLUMN;
          }
 
@@ -311,7 +312,7 @@ sub _map_fk_columns {
 
       foreach my $fk_col ( keys %parent_col_for ) {
          $tbl->{mapped_columns}->{$fk_col}++;
-         $tbl->{value_for}->{$fk_col} = $fetch_row_params;
+         $tbl->{value_for}->{$fk_col} = [FETCHED_ROW, $fetch_row_params];
       }
    }
 
@@ -389,52 +390,48 @@ sub mapped_values {
    my $mapped_cols = $self->mapped_columns($tbl);
    return unless $mapped_cols;
 
-   my $value_for   = $tbl->{value_for};
-   my @vals        = map { $value_for->{$_} || '?' } @$mapped_cols;
+   my $value_for = $tbl->{value_for};
+   my @vals;
+   map { push @vals, $value_for->{$_} } @$mapped_cols;
+
    return \@vals;
 }
 
 sub map_values {
    my ( $self, %args ) = @_;
-   my @required_args = qw(tbl row);
+   my @required_args = qw(src_row dst_tbl);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($tbl, $row) = @args{@required_args};
+   my ($src_row, $dst_tbl) = @args{@required_args};
 
-   my $mapped_cols = $self->mapped_columns($tbl);
-   my $value_for   = $tbl->{value_for};
+   my $mapped_cols = $self->mapped_columns($dst_tbl);
+   my $value_for   = $dst_tbl->{value_for};
+   my %dst_row;
    COLUMN:
    foreach my $col ( @$mapped_cols ) {
-      my $val = $value_for->{$col};
-      if ( exists $row->{$col} ) {
-         MKDEBUG && _d('Value for', $col, 'already exists');
-         next COLUMN;
+      my ($val_type, $val) = @{$value_for->{$col}};
+      if ( $val_type == SOURCE_ROW_COLUMN ) {
+         MKDEBUG && _d('Value for column', $col,
+            'comes from source row column', $val);
+         $dst_row{$col} = $src_row->{$val};
       }
-
-      if ( ref $val eq 'HASH' ) {
-         MKDEBUG && _d('Value for', $col, 'is a fetched row');
+      elsif ( $val_type == FETCHED_ROW ) {
+         MKDEBUG && _d('Value for column', $col, 'comes from fetched row');
          my $fetched_row = $self->_fetch_row(%args, fetch_row_params => $val);
-         @{$row}{keys %$fetched_row} = values %$fetched_row;
+         $dst_row{$col} = $fetched_row->{$col};
       }
-      elsif ( ref $val eq 'ARRAY' ) {
-         map {
-            MKDEBUG && _d('Value for', $col, 'is source column', $_);
-            $row->{$col} = $row->{$_}
-         } @$val;
-      }
-      else {
-         MKDEBUG && _d('Value for', $col, 'is constant');
-         $row->{$col} = $val;
+      elsif ( $val_type == CONSTANT_VALUE ) {
+         MKDEBUG && _d('Value for column', $col, 'comes from a constant value');
+         $dst_row{$col} = $val;
       }
    }
 
-   my @values = map { $row->{$_} } @$mapped_cols;
    MKDEBUG && _d("Mapped values:\n",
-      map { "$_=" . (defined $row->{$_} ? $row->{$_} : 'undef') . "\n" }
+      map { "$_=" . (defined $dst_row{$_} ? $dst_row{$_} : 'undef') . "\n" }
       @$mapped_cols);
 
-   return \@values;
+   return \%dst_row;
 }
 
 sub map_foreign_table {

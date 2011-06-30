@@ -226,23 +226,25 @@ sub _make_last_insert_id_callback {
             my $sth = $args{dbh}->prepare($sql);
             $callback = sub {
                my ( %args ) = @_;
+               my ($row, $cols) = @args{qw(row cols)};
+
                MKDEBUG && _d($sth->{Statement});
                if ( $print ) {
                   print $sth->{Statement}, "\n";
                   print "-- Bind values: "
                      . join(', ',
-                        map { defined $_ ? $_ : 'NULL' } @{$args{row}}{@$cols})
+                        map { defined $_ ? $_ : 'NULL' } @{$row}{@$cols})
                      . "\n";
                }
 
-               my $row;
+               my $last_row;
                if ( $execute ) {
-                  $sth->execute(@{$args{row}}{@$cols});
-                  $row = $sth->fetchrow_arrayref();
+                  $sth->execute(@{$row}{@$cols});
+                  $last_row = $sth->fetchrow_arrayref();
                   $sth->finish();
                }
                my %last_row_id = (
-                  $auto_inc_col => $row->[0],
+                  $auto_inc_col => $last_row->[0],
                );
                return \%last_row_id;
             };
@@ -379,17 +381,19 @@ sub _copy_rows_in_chunk {
    my $inserts = $self->{inserts};
    my $last_row;
    SOURCE_ROW:
-   while ( $sth->{Active} && defined(my $row = $sth->fetchrow_hashref()) ) {
+   while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
       foreach my $dst_tbl ( @$dst_tbls ) {
          MKDEBUG && _d('Inserting row into', $dst_tbl->{db}, $dst_tbl->{tbl});
-         my $insert = $dst_tbl->{insert};
-         my $values = $column_map->map_values(
-            dbh => $dst_dbh,
-            tbl => $dst_tbl,
-            row => $row,
+         my $insert   = $dst_tbl->{insert};
+
+         my $dst_cols = $insert->{cols};
+         my $dst_row  = $column_map->map_values(
+            dbh     => $dst_dbh,
+            src_row => $src_row,
+            dst_tbl => $dst_tbl,
          );
 
          # ##################################################################
@@ -398,16 +402,18 @@ sub _copy_rows_in_chunk {
          my $insert_row = 1;
          if ( my $check_for_row_sth = $insert->{check_for_row_sth} ) {
             MKDEBUG && _d($check_for_row_sth->{Statement});
-            my $cols = $insert->{cols};
+
             if ( $print ) {
                print $check_for_row_sth->{Statement}, "\n";
                print "-- Bind values: "
-                  . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
+                  . join(', ',
+                     map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+                     @$dst_cols)
                   . "\n";
             }
 
             if ( $execute ) {
-               $check_for_row_sth->execute(@$values);
+               $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
                my $row = $check_for_row_sth->fetchrow_arrayref();
                $check_for_row_sth->finish();
 
@@ -426,11 +432,13 @@ sub _copy_rows_in_chunk {
             if ( $print ) {
                print $insert->{sth}->{Statement}, "\n";
                print "-- Bind values: "
-                  . join(', ', map { defined $_ ? $_ : 'NULL' } @$values)
+                  . join(', ',
+                     map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+                     @$dst_cols)
                   . "\n";
             }
             if ( $execute ) {
-               $insert->{sth}->execute(@$values);
+               $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
                $stats->{rows_inserted}++ if $stats;
             }
          }
@@ -442,7 +450,8 @@ sub _copy_rows_in_chunk {
             $dst_tbl->{last_insert_id} = $last_insert_id->(
                dbh   => $dst_dbh,
                tbl   => $dst_tbl,
-               row   => $row,
+               row   => $dst_row,
+               cols  => $dst_cols,
                sth   => $insert->{sth},
                stats => $stats,
             );
@@ -450,7 +459,7 @@ sub _copy_rows_in_chunk {
                Dumper($dst_tbl->{last_insert_id}));
          }
 
-         $last_row = $row;
+         $last_row = $src_row;
       } # DEST_TABLE
    } # SOURCE_ROW
 
