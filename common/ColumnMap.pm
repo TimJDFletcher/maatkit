@@ -42,9 +42,15 @@ $Data::Dumper::Quotekeys = 0;
 
 use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 
-use constant SOURCE_ROW_COLUMN => 1;
-use constant FETCHED_ROW       => 2;
-use constant CONSTANT_VALUE    => 3;
+# Insert group columns array index
+use constant DST_COL    => 0;  # Dest table column receiving value
+use constant VALUE_TYPE => 1;  # Type of value being inserted
+use constant VALUE      => 2;  # The value being insrted
+
+# Value types (value for DST_COL comes from a...)
+use constant COLUMN       => 1;
+use constant SELECTED_ROW => 2;
+use constant CONSTANT     => 3;
 
 # Sub: new
 #
@@ -52,90 +58,164 @@ use constant CONSTANT_VALUE    => 3;
 #   %args - Arguments
 #
 # Required Arguments:
-#   src_tbl - <Schema::get_table()> to map columns from.
-#   Schema  - <Schema> object with tables to map tbl columns to.
+#   src_tbl  - <Schema::get_table()> to map columns from.
+#   dst_tbls - Arrayref of <Schema::get_table()> hashrefs.
+#   Schema   - <Schema> object with tables to map tbl columns to.
 #
 # Optional Arguments:
-#   ignore_columns  - Hashref of src_tbl columns to ignore (not mapped),
-#                     keyed on column name with any true value.
-#   constant_values - Hashref of constant values, keyed on column name.
-#   column_map      - Arrayref of manual column map.
-#   print           - Print column map.
+#   ignore_columns         - Hashref of src_tbl columns to ignore (not mapped),
+#                            keyed on column name with any true value.
+#   constant_values        - Hashref of constant values, keyed on column name.
+#   column_map             - Arrayref of hashrefs w/ column mappings.
+#   foreign_key_column_map - Arrayref of hashrefs w/ fk column mappings.
+#   print                  - Print column map.
 #
 # Returns:
 #   ColumnMap object
 sub new {
    my ( $class, %args ) = @_;
-   my @required_args = qw(src_tbl Schema);
+   my @required_args = qw(src_tbl dst_tbls Schema);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($src_tbl, $schema) = @args{@required_args};
-
+   my ($src_tbl, $dst_tbls, $schema) = @args{@required_args};
+   my $ignore_columns  = $args{ignore_columns};
+   my $constant_values = $args{constant_values};
+   my $column_map      = $args{column_map};
+   my $fk_map          = $args{foreign_key_column_map}; 
+   
    my %map_once;
-   if ( my $column_map = $args{column_map} ) {
-      foreach my $map ( @$column_map ) {
-         MKDEBUG && _d('Mapping manual column', $map->{src_col});
-         if ( !$src_tbl->{tbl_struct}->{is_col}->{$map->{src_col}} ) {
-            die "Invalid column map: column $map->{src_col} "
-               . "does not exist in table $src_tbl->{db}.$src_tbl->{tbl}";
-            next;
-         }
-         my %dst_col = %{$map->{dst_col}};
-         if ( !$dst_col{db} || !$dst_col{tbl} || !$dst_col{col} ) {
-            die "Invalid column map: the destination column "
-               . join('.',
-                  map { defined $dst_col{$_} ? $dst_col{$_} : '' }
-                  qw(db tbl col))
-               . " is missing a part for source column $map->{src_col}";
-            next;
-         }
-         my $dst_tbls = $schema->find_column(%dst_col);
-         if ( !$dst_tbls || !@$dst_tbls ) {
-            die "Invalid column map: column $dst_col{col} "
-               . "does not exist in table $dst_col{db}.$dst_col{tbl}";
-            next;
-         }
 
-         if ( $map->{map_once} ) {
-            $map_once{$map->{src_col}} = 1;
-         }
+   DST_TBL:
+   foreach my $dst_tbl ( @$dst_tbls ) {
+      MKDEBUG && _d('Mapping columns in dest table',
+         $dst_tbl->{db}, $dst_tbl->{tbl});
 
-         _map_column(
-            %args,
-            src_col  => $map->{src_col},
-            map_once => \%map_once,
-            dst_tbl  => $dst_tbls->[0],
-            dst_col  => $dst_col{col},
-         );
+      my %fk_col;
+      if ( my $fks = $dst_tbl->{fk_struct} ) {
+         foreach my $fk ( values %$fks ) {
+            map { $fk_col{$_} = $fk } @{$fk->{cols}};
+         }
       }
-   }
 
-   if ( my $const_vals = $args{constant_values} ) {
-      foreach my $src_col ( keys %$const_vals ) {
-         MKDEBUG && _d('Mapping constant column', $src_col);
-         _map_column(
-            %args,
-            src_col  => $src_col,
-            map_once => \%map_once,
-            val      => $const_vals->{$src_col},
-         );
-      }
-   }
+      my @insert_plan;
+      DST_COL:
+      foreach my $dst_col ( @{$dst_tbl->{tbl_struct}->{cols}} ) {
+         if ( $ignore_columns && $ignore_columns->{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'is ignored');
+            next DST_COL;
+         }
 
-   my $ignore_col = $args{ignore_columns};
-   foreach my $src_col ( @{$src_tbl->{tbl_struct}->{cols}} ) {
-      if ( $ignore_col->{$src_col} ) {
-         MKDEBUG && _d('Not mapping ignored column', $src_col);
-         next;
-      }
-      MKDEBUG && _d('Mapping column', $src_col);
-      _map_column(
-         %args,
-         src_col  => $src_col,
-         map_once => \%map_once,
+         if ( my $fk = $fk_col{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'is a foreign key column');
+            my $groupno = 0;
+            if ( $fk_map ) {
+               FK_MAP:
+               foreach my $map ( @$fk_map ) {
+                  if (    $dst_tbl->{db}  eq $map->{db}
+                       && $dst_tbl->{tbl} eq $map->{tbl}
+                       && $dst_col        eq $map->{col} )
+                  {
+                     $groupno = ($map->{group_number} || 1) - 1;
+                     last FK_MAP;
+                  }
+               }
+            }
+
+            my $select_row_params = _map_fk(
+               %args,
+               tbl     => $dst_tbl,
+               fk      => $fk,
+               groupno => $groupno,
+            );
+            MKDEBUG && _d($dst_col, 'gets values from insert group', $groupno);
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               SELECTED_ROW,
+               $select_row_params,
+            ];
+
+            next DST_COL;
+         }
+
+         if ( $column_map ) {
+            my $mapped_cols = 0;
+            foreach my $map (
+               grep {
+                     $dst_tbl->{db}  eq $_->{dst_col}->{db}
+                  && $dst_tbl->{tbl} eq $_->{dst_col}->{tbl}
+                  && $dst_col        eq $_->{dst_col}->{col}
+               } @$column_map ) {
+               my $groupno = ($map->{group_number} || 1) - 1;
+               MKDEBUG && _d($dst_col, 'gets values from mapped column',
+                  $map->{src_col}, 'for insert group', $groupno);
+               push @{$insert_plan[$groupno]->{columns}}, [
+                  $dst_col,
+                  COLUMN,
+                  $map->{src_col},
+               ];
+               $src_tbl->{mapped_columns}->{$map->{src_col}}++;
+               if ( $map->{map_once} ) {
+                  $map_once{$dst_col} = 1;
+               }
+               else {
+                  $mapped_cols++;
+               }
+            }
+            next DST_COL if $mapped_cols;
+         }
+
+         if ( $constant_values && defined $constant_values->{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'gets values from contant value');
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               CONSTANT,
+               $constant_values->{$dst_col},
+            ];
+            $src_tbl->{mapped_columns}->{$dst_col}++;
+            next DST_COL;
+         }
+
+         if ( $src_tbl->{tbl_struct}->{is_col}->{$dst_col} ) {
+            if ( $map_once{$dst_col} ) {
+               MKDEBUG && _d($dst_col, "is already mapped once");
+               next DST_COL;
+            }
+            if ( $column_map ) {
+               foreach my $map (
+                  grep { $dst_col eq $_->{src_col} } @$column_map )
+               {
+                  if ( $map->{map_once} ) {
+                     MKDEBUG && _d($dst_col, "will be manually mapped");
+                     next DST_COL;
+                  }
+               }
+            }
+
+            MKDEBUG && _d($dst_col, 'gets values from source column', $dst_col);
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               COLUMN,
+               $dst_col,
+            ];
+            $src_tbl->{mapped_columns}->{$dst_col}++;
+            next DST_COL;
+         }
+
+         MKDEBUG && _d($dst_col, 'is not mapped');
+      } # DST_COL
+
+      _check_insert_plan(
+         tbl         => $dst_tbl,
+         insert_plan => \@insert_plan,
       );
-   }
+      for my $i ( 0..$#insert_plan ) {
+         $insert_plan[$i]->{group_number}    = $i;
+         $dst_tbl->{last_row_inserted}->[$i] = undef;
+      }
+      $dst_tbl->{insert_plan} = \@insert_plan;
+
+   } # DST_TBL
 
    my $self = {
       %args,
@@ -144,112 +224,14 @@ sub new {
    return bless $self, $class;
 }
 
-sub _map_column {
+sub _map_fk {
    my ( %args ) = @_;
-   my @required_args = qw(src_tbl src_col Schema);
+   my @required_args = qw(fk tbl Schema);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($src_tbl, $src_col, $schema) = @args{@required_args};
-
-   if ( $args{map_once}
-        && $args{map_once}->{$src_col}
-        && $src_tbl->{mapped_columns}->{$src_col} ) {
-      MKDEBUG && _d('Column', $src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-         'already mapped');
-      return;
-   }
-
-   my ($dst_tbl, $dst_col) = @args{qw(dst_tbl dst_col)};
-   if ( $dst_tbl && $dst_col ) {
-      if ( $dst_tbl->{mapped_columns}->{$dst_col}++ ) {
-         MKDEBUG && _d('Column', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col,
-            'already mapped');
-         next;
-      }
-
-      MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-         'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $dst_col);
-      if ( $args{print} ) {
-         print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
-             . "maps to column "
-             . "$dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col\n";
-      }
-      $dst_tbl->{value_for}->{$dst_col} = [SOURCE_ROW_COLUMN, $src_col];
-
-      if ( $dst_tbl->{fk_struct} ) {
-         _map_fk_columns(%args, tbl => $dst_tbl);
-      } 
-   }
-   else {
-      # See if the column maps directly, src_tbl.colX -> dst_tbl.colX.
-      # One source column can map to multiple destination tables.
-      my $dst_tbls = $schema->find_column(
-         col    => $src_col,
-         ignore => [ $src_tbl ],
-      );
-
-      if ( !$dst_tbls || !@$dst_tbls ) {
-         MKDEBUG && _d('Column', $src_col, 'does not map');
-         return;
-      }
-
-      my $val = $args{val};
-      foreach my $dst_tbl ( @$dst_tbls ) {
-         # Source col maps to dest col with the same name.  Hopefully this
-         # dest column is only mapped to once, else that's a problem that
-         # we don't detect yet.  A hash is used to maintain a unique list.
-         if ( $dst_tbl->{mapped_columns}->{$src_col}++ ) {
-            MKDEBUG && _d('Column', $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col,
-               'already mapped');
-            next;
-         }
-
-         if ( defined $val ) {
-            MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-               'maps to constant value', $val);
-            $dst_tbl->{value_for}->{$src_col} = [CONSTANT_VALUE, $val];
-            if ( $args{print} ) {
-               print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
-                   . "maps to constant value $val\n";
-            }
-         }
-         else {
-            MKDEBUG && _d($src_tbl->{db}, $src_tbl->{tbl}, $src_col,
-               'maps to', $dst_tbl->{db}, $dst_tbl->{tbl}, $src_col);
-            $dst_tbl->{value_for}->{$src_col} = [SOURCE_ROW_COLUMN, $src_col];
-            if ( $args{print} ) {
-               print "-- Column $src_tbl->{db}.$src_tbl->{tbl}.$src_col "
-                   . "maps to column "
-                   . "$dst_tbl->{db}.$dst_tbl->{tbl}.$src_col\n";
-            }
-         }
-
-         # If the dest table has any fk columns, we must map them all to
-         # satisfy the fk contraints.
-         if ( $dst_tbl->{fk_struct} ) {
-            _map_fk_columns(%args, tbl => $dst_tbl);
-         } 
-      }
-   }
-
-   # This source column has been mapped.  It may be mapped multiple times.
-   # A hash is used to maintain a unique list.
-   $src_tbl->{mapped_columns}->{$src_col}++;
-
-   return;
-}
-
-sub _map_fk_columns {
-   my ( %args ) = @_;
-   my @required_args = qw(tbl Schema);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($tbl, $schema) = @args{@required_args};
-
-   my $fks = $tbl->{fk_struct};
-   return unless $fks;
+   my ($fk, $tbl, $schema) = @args{@required_args};
+   my $groupno             = $args{groupno} || 0;
 
    # Each fk constraint essentially maps fk columns in the source table
    # to parent columns.  For example,
@@ -258,193 +240,202 @@ sub _map_fk_columns {
    # Column dst_tbl.fk_col1 is mapped/constrained to parent_tbl.p_col1.
    # So we must preserve these mappings/contraints, else the caller won't
    # have all the necessary values to insert rows into the dest tables.
-   FK_CONSTRAINT:
-   foreach my $fk ( values %$fks ) {
-      MKDEBUG && _d('Mapping fk columns in constraint', $fk->{name});
+   MKDEBUG && _d('Mapping fk columns in constraint', $fk->{name});
 
-      # TableParser::get_fks() should handle this, but just in case...
-      if ( !$fk->{parent_tbl}->{db} ) {
-         MKDEBUG && _d('No fk parent table database,',
-            'assuming child table database', $tbl->{db});
-         $fk->{parent_tbl}->{db} = $tbl->{db};
+   # TableParser::get_fks() should handle this, but just in case...
+   if ( !$fk->{parent_tbl}->{db} ) {
+      MKDEBUG && _d('No fk parent table database,',
+         'assuming child table database', $tbl->{db});
+      $fk->{parent_tbl}->{db} = $tbl->{db};
+   }
+   my $parent_tbl = $schema->get_table(@{$fk->{parent_tbl}}{qw(db tbl)}); 
+
+   my @fk_cols     = @{$fk->{cols}};
+   my @parent_cols = @{$fk->{parent_cols}};
+   my %cols;
+   FK_COLUMN:
+   for my $i ( 0..$#fk_cols ) {
+      my $fk_col     = $fk_cols[$i];
+      my $parent_col = $parent_cols[$i];
+      MKDEBUG && _d($fk_col, 'references',
+         $parent_tbl->{db}, $parent_tbl->{tbl}, $parent_col);
+      $cols{$parent_col} = $fk_col;
+      if ( $args{print} ) {
+         print "-- Foreign key column $tbl->{db}.$tbl->{tbl}.$fk_col "
+             . "maps to column "
+             . "$parent_tbl->{db}.$parent_tbl->{tbl}.$parent_col\n";
       }
-      my $parent_tbl = $schema->get_table(@{$fk->{parent_tbl}}{qw(db tbl)}); 
+   }
 
-      my @fk_cols     = @{$fk->{cols}};
-      my @parent_cols = @{$fk->{parent_cols}};
-      my %parent_col_for;
-      FK_COLUMN:
-      for my $i ( 0..$#fk_cols ) {
-         my $fk_col     = $fk_cols[$i];
-         my $parent_col = $parent_cols[$i];
+   my $select_row_params = {
+      tbl   => $parent_tbl,
+      cols  => \%cols,
+      where => \$parent_tbl->{last_row_inserted}->[$groupno], # ref to hashref
+   };
+   return $select_row_params;
+}
 
-         # A fk col may already be mapped for two reasons.  One, a previous
-         # fk constraint used the column too, so its value will be fetched
-         # as part of that previous fk constraint.  Two, the source table has
-         # a column with the same name, so _map_columns() already mapped this
-         # fk column.  This means that part of this fk constraint comes from
-         # the source table and part from the parent table.
-         if ( $tbl->{value_for}->{$fk_col} ) {
-            MKDEBUG && _d('Foreign key column', $fk_col, 'already mapped to',
-               @{$tbl->{value_for}->{$fk_col}});
-            next FK_COLUMN;
+sub _check_insert_plan {
+   my ( %args ) = @_;
+   my @required_args = qw(tbl insert_plan);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($tbl, $insert_plan) = @args{@required_args};
+
+   foreach my $insert_group ( @$insert_plan ) {
+      my %seen;
+      foreach my $col ( @{$insert_group->{columns}} ) {
+         if ( my $first_col = $seen{$col->[DST_COL]} ) {
+            die "Two values are mapped to $tbl->{db}.$tbl->{tbl}."
+               . $col->[DST_COL] . ": "
+               . _print_column_value($col)
+               . " and " . _print_column_value($first_col) . "\n";
          }
-
-         MKDEBUG && _d($tbl->{db}, $tbl->{tbl}, $fk_col, 'maps to',
-            $parent_tbl->{db}, $parent_tbl->{tbl}, $parent_col);
-         $parent_col_for{$fk_col} = $parent_col;
-         if ( $args{print} ) {
-            print "-- Foreign key column $tbl->{db}.$tbl->{tbl}.$fk_col "
-                . "maps to column "
-                . "$parent_tbl->{db}.$parent_tbl->{tbl}.$parent_col\n";
-         }
-      }
-
-      # Fetching parent table column values for fk constraints is like any
-      # other type of fetch back.  _fetch_row() uses these params to construct
-      # a SELECT statement.  The where value is a key in the tbl hashref that
-      # doesn't exist yet, which is why we pass the key.
-      my $fetch_row_params = {
-         cols  => \%parent_col_for,
-         tbl   => $parent_tbl,
-         where => 'last_insert_id',
-      };
-
-      foreach my $fk_col ( keys %parent_col_for ) {
-         $tbl->{mapped_columns}->{$fk_col}++;
-         $tbl->{value_for}->{$fk_col} = [FETCHED_ROW, $fetch_row_params];
+         $seen{$col->[DST_COL]} = $col;
       }
    }
 
    return;
 }
 
-sub _fetch_row {
+sub _print_column_value {
+   my ( $col ) = @_;
+   return "" unless $col;
+   my $str = (  $col->[VALUE_TYPE] == COLUMN       ? 'column'
+              : $col->[VALUE_TYPE] == CONSTANT     ? 'constant'
+              : $col->[VALUE_TYPE] == SELECTED_ROW ? 'selected row'
+              :                                      'invalid type');
+   if ( $col->[VALUE_TYPE] != SELECTED_ROW ) {
+      $str .= ' ' . $col->[VALUE];
+   }
+   return $str;
+}
+
+sub _select_row {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh fetch_row_params);
+   my @required_args = qw(dbh select_row_params);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($dbh, $params) = @args{@required_args};
    my $tbl            = $params->{tbl};
-   my $where          = $tbl->{$params->{where}};
-   MKDEBUG && _d('Fetching row from', $tbl->{db}, $tbl->{tbl});
+   my $where          = $params->{where};  # this is a ref to a hashref
+   MKDEBUG && _d('Selecting row from', $tbl->{db}, $tbl->{tbl});
 
-   my $sth = $tbl->{fetch_row_sth} ||= $self->_make_fetch_row_sth(%args);
+   my $sth = $params->{select_row_sth} ||= $self->_make_select_row_sth(%args);
    MKDEBUG && _d($sth->{Statement});
 
-   my @params = $where ? map { $where->{$_} } sort keys %$where : ();
+   # $where is a ref to a hashref, so it has to be dereferenced with $$
+   my @params = map { $$where->{$_} } sort keys %$$where;
    print $sth->{Statement}, "\n" if $self->{print};
    $sth->execute(@params);
 
    my $row = $sth->fetchrow_hashref();
-   MKDEBUG && _d('Fetched row:', Dumper($row));
+   MKDEBUG && _d('Selected row:', Dumper($row));
 
    $sth->finish();
    return $row;
 }
 
-sub _make_fetch_row_sth {
+sub _make_select_row_sth {
    my ( $self, %args ) = @_;
-   my @required_args = qw(dbh fetch_row_params);
+   my @required_args = qw(dbh select_row_params);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $params) = @args{@required_args};
-   my ($cols, $tbl)   = @{$params}{qw(cols tbl where)};
-   my $where          = $tbl->{$params->{where}};
-   MKDEBUG && _d('Making fetch row sth for', $tbl->{db}, $tbl->{tbl});
+   my ($dbh, $params)       = @args{@required_args};
+   my ($tbl, $cols, $where) = @{$params}{qw(tbl cols where)};
 
    my $sql
       = "SELECT "
-      . join(', ', map { "$cols->{$_} AS $_" } sort keys %$cols)
+      . join(', ', map { "$_ AS $cols->{$_}" } sort keys %$cols)
       . " FROM $tbl->{db}.$tbl->{tbl}"
-      . ($where ? " WHERE " . join(' AND', map { "$_=?" } sort keys %$where)
-                : "")
+      . " WHERE " . join(' AND ', map { "$_=?" } sort keys %$$where)
       . " LIMIT 1";
 
    my $sth = $args{dbh}->prepare($sql);
    return $sth;
 }
 
-sub mapped_columns {
+sub insert_plan {
    my ( $self, $tbl ) = @_;
    die "I need a tbl argument" unless $tbl;
-
-   if ( !$tbl->{mapped_columns} ) {
-      MKDEBUG && _d('No columns are mapped to table', $tbl->{db}, $tbl->{tbl});
+   if ( !$tbl->{insert_plan} ) {
+      MKDEBUG && _d('No insert plan for table', $tbl->{db}, $tbl->{tbl});
       return;
    }
-
-   if ( !$tbl->{mapped_columns_sorted} ) {
-      $tbl->{mapped_columns_sorted} = sort_columns(
-         tbl  => $tbl,
-         cols => [ keys %{$tbl->{mapped_columns}} ],
-      );
-   }
-   return $tbl->{mapped_columns_sorted};
+   return $tbl->{insert_plan};
 }
 
-sub mapped_values {
+sub mapped_columns {
    my ( $self, $tbl ) = @_;
-   my $mapped_cols = $self->mapped_columns($tbl);
-   return unless $mapped_cols;
+   if ( !$tbl->{mapped_columns} ) {
+      return;
+   }
+   my $cols = sort_columns(
+      tbl  => $tbl,
+      cols => [ keys %{$tbl->{mapped_columns}} ],
+   );
+   return $cols;
+}
 
-   my $value_for = $tbl->{value_for};
-   my @vals;
-   map { push @vals, $value_for->{$_} } @$mapped_cols;
-
-   return \@vals;
+sub insert_columns {
+   my ( $self, $column_group ) = @_;
+   die "I need a tbl argument" unless $column_group;
+   my @cols;
+   foreach my $col ( @{$column_group->{columns}} ) {
+      push @cols, $col->[DST_COL];
+   }
+   return \@cols;
 }
 
 sub map_values {
    my ( $self, %args ) = @_;
-   my @required_args = qw(src_row dst_tbl);
+   my @required_args = qw(src_row dst_tbl insert_group);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($src_row, $dst_tbl) = @args{@required_args};
+   my ($src_row, $dst_tbl, $insert_group) = @args{@required_args};
 
-   my $mapped_cols = $self->mapped_columns($dst_tbl);
-   my $value_for   = $dst_tbl->{value_for};
    my %dst_row;
    COLUMN:
-   foreach my $col ( @$mapped_cols ) {
-      my ($val_type, $val) = @{$value_for->{$col}};
-      if ( $val_type == SOURCE_ROW_COLUMN ) {
-         MKDEBUG && _d('Value for column', $col,
-            'comes from source row column', $val);
-         $dst_row{$col} = $src_row->{$val};
+   foreach my $col ( @{$insert_group->{columns}} ) {
+      my ($dst_col, $value_type, $value) = @$col;
+      if ( $value_type == COLUMN ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from column', $value);
+         $dst_row{$dst_col} = $src_row->{$value};
       }
-      elsif ( $val_type == FETCHED_ROW ) {
-         MKDEBUG && _d('Value for column', $col, 'comes from fetched row');
-         my $fetched_row = $self->_fetch_row(%args, fetch_row_params => $val);
-         $dst_row{$col} = $fetched_row->{$col};
+      elsif ( $value_type == SELECTED_ROW ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from a selected row');
+         my $selected_row = $self->_select_row(
+            %args,
+            select_row_params => $value,
+         );
+         $dst_row{$dst_col} = $selected_row->{$dst_col};
       }
-      elsif ( $val_type == CONSTANT_VALUE ) {
-         MKDEBUG && _d('Value for column', $col, 'comes from a constant value');
-         $dst_row{$col} = $val;
+      elsif ( $value_type == CONSTANT ) {
+         MKDEBUG && _d('Value for column', $dst_col,
+            'comes from a constant value');
+         $dst_row{$dst_col} = $value;
+      }
+      else {
+         die "Invalid value type for $dst_tbl->{db}.$dst_tbl->{tbl}.$dst_col: "
+            . (defined $value_type ? $value_type : '');
       }
    }
 
    MKDEBUG && _d("Mapped values:\n",
-      map { "$_=" . (defined $dst_row{$_} ? $dst_row{$_} : 'undef') . "\n" }
-      @$mapped_cols);
+      map {
+         my $col = $_->[DST_COL];
+         "$col=" . (defined $dst_row{$col} ? $dst_row{$col} : 'undef') . "\n"
+      } @{$insert_group->{columns}});
+
+   $dst_tbl->{last_row_inserted}->[$insert_group->{group_number}] = \%dst_row;
 
    return \%dst_row;
-}
-
-sub map_foreign_table {
-   my ( $self, $tbl ) = @_;
-   return unless $tbl;
-   MKDEBUG && _d('Mapping foreign table', $tbl->{db}, $tbl->{tbl});
-   if ( $tbl->{fk_struct} ) {
-      _map_fk_columns(
-         tbl    => $tbl,
-         Schema => $self->{Schema},
-      );
-   } 
-   return $self->mapped_columns($tbl);
 }
 
 # Sub: sort_columns

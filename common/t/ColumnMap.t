@@ -58,8 +58,8 @@ sub make_column_map {
    );
    if ( $args{foreign_keys} ) {
       $schema_itr = new ForeignKeyIterator(
-         db             => $args{src_db},
-         tbl            => $args{src_tbl},
+         db             => $args{dst_db},
+         tbl            => $args{dst_tbl},
          reverse        => 1,
          SchemaIterator => $si,
          Quoter         => $q,
@@ -72,10 +72,14 @@ sub make_column_map {
    }
 
    # Init the schema qualifier.
-   1 while(defined $schema_itr->next_schema_object());
+   my @dst_tbls;
+   while ( my $tbl = $schema_itr->next_schema_object() ) {
+      push @dst_tbls, $tbl;
+   }
 
    $column_map = new ColumnMap(
       src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
+      dst_tbls        => \@dst_tbls,
       Schema          => $schema,
       constant_values => $args{constant_values},
       ignore_columns  => $args{ignore_columns},
@@ -83,10 +87,15 @@ sub make_column_map {
    );
 }
 
+# ############################################################################
+# A simple 1-to-1 mapping.
+# ############################################################################
 make_column_map(
    files           => ["$in/dump002.txt"],
    src_db          => 'test',
    src_tbl         => 'raw_data',
+   dst_db          => 'test',
+   dst_tbl         => 'data',
    foreign_keys    => 1,
    constant_values => {
       posted   => 'NOW()',
@@ -97,71 +106,67 @@ make_column_map(
 is_deeply(
    $column_map->mapped_columns($schema->get_table('test', 'raw_data')),
    [qw(date hour entity_property_1 entity_property_2 data_1 data_2)],
-   "Map source table columns, raw_data"
+   "Mapped source table columns, raw_data"
 );
 
+my $plan = $column_map->insert_plan($schema->get_table('test', 'data_report'));
 is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(date posted acquired)],
-   "Map dest table columns, data_report"
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'date',     ColumnMap::COLUMN,   'date',  ],
+            [ 'posted',   ColumnMap::CONSTANT, 'NOW()', ],
+            [ 'acquired', ColumnMap::CONSTANT, '',      ],
+         ],
+      }
+   ],
+   "data_report insert plan"
 );
 
+$plan = $column_map->insert_plan($schema->get_table('test', 'entity'));
 is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'entity')),
-   [qw(entity_property_1 entity_property_2)],
-   "Map dest table columns, entity"
-);
-
-is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'data')),
-   [qw(data_report hour entity data_1 data_2)],
-   "Map dest table columns, data"
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'entity_property_1', ColumnMap::COLUMN, 'entity_property_1', ],
+            [ 'entity_property_2', ColumnMap::COLUMN, 'entity_property_2', ],
+         ],
+      }
+   ],
+   "entity insert plan"
 );
 
 my $data_report_tbl = $schema->get_table('test', 'data_report');
-my $entity_tbl      = $schema->get_table('test', 'entity');
-is_deeply(
-   $column_map->mapped_values($schema->get_table('test', 'data')),
-   [
-      [ ColumnMap::FETCHED_ROW, 
-        { cols  => { data_report => 'id' },
-          tbl   => $data_report_tbl,
-          where => 'last_insert_id',
-        },
-      ],
-      [ ColumnMap::SOURCE_ROW_COLUMN,
-        'hour',
-      ],
-      [ ColumnMap::FETCHED_ROW, 
-        { cols  => { entity => 'id' },
-          tbl   => $entity_tbl,
-          where => 'last_insert_id',
-        },
-      ],
-      [ ColumnMap::SOURCE_ROW_COLUMN,
-        'data_1',
-      ],
-      [ ColumnMap::SOURCE_ROW_COLUMN,
-        'data_2',
-      ],
-   ],
-   "Mapped values with fk fetch backs"
-);
+my $sel_1 = {
+   tbl   => $data_report_tbl,
+   cols  => { id => 'data_report' },
+   where => \$data_report_tbl->{last_row_inserted}->[0],
+};
 
+my $entity_tbl = $schema->get_table('test', 'entity');
+my $sel_2 = {
+   tbl   => $entity_tbl,
+   cols  => { id => 'entity' },
+   where => \$entity_tbl->{last_row_inserted}->[0],
+};
+
+$plan = $column_map->insert_plan($schema->get_table('test', 'data'));
 is_deeply(
-   $column_map->mapped_values($schema->get_table('test', 'data_report')),
+   $plan,
    [
-      [ ColumnMap::SOURCE_ROW_COLUMN,
-        'date',
-      ],
-      [ ColumnMap::CONSTANT_VALUE,
-        'NOW()',
-      ],
-      [ ColumnMap::CONSTANT_VALUE,
-        '',
-      ],
+      {  group_number => 0,
+         columns      => [
+            [ 'data_report', ColumnMap::SELECTED_ROW, $sel_1,   ],
+            [ 'hour',        ColumnMap::COLUMN,       'hour',   ],
+            [ 'entity',      ColumnMap::SELECTED_ROW, $sel_2,   ],
+            [ 'data_1',      ColumnMap::COLUMN,       'data_1', ],
+            [ 'data_2',      ColumnMap::COLUMN,       'data_2', ],
+         ],
+      }
    ],
-   "Mapped constant values"
+   "data insert plan"
 );
 
 # ############################################################################
@@ -171,6 +176,8 @@ make_column_map(
    files           => ["$in/dump002.txt"],
    src_db          => 'test',
    src_tbl         => 'raw_data',
+   dst_db          => 'test',
+   dst_tbl         => 'data',
    foreign_keys    => 1,
    constant_values => {
       posted   => 'NOW()',
@@ -187,22 +194,14 @@ is_deeply(
 );
 
 is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(posted acquired)],
-   "Ignored column not mapped to dest table"
-);
-
-is_deeply(
-   $column_map->mapped_values($schema->get_table('test', 'data_report')),
-   [
-      [ ColumnMap::CONSTANT_VALUE,
-        'NOW()',
+   $column_map->insert_plan($schema->get_table('test', 'data_report')),
+   [{ group_number => 0,
+      columns      => [
+         ['posted',   ColumnMap::CONSTANT, 'NOW()'],
+         ['acquired', ColumnMap::CONSTANT, ''     ],
       ],
-      [ ColumnMap::CONSTANT_VALUE,
-        '',
-      ]
-   ],
-   "No value placeholder for ignored column"
+   }],
+   "No plan for ignored column"
 );
 
 # ############################################################################
@@ -212,11 +211,9 @@ make_column_map(
    files           => ["$in/dump002.txt"],
    src_db          => 'test',
    src_tbl         => 'raw_data',
+   dst_db          => 'test',
+   dst_tbl         => 'data',
    foreign_keys    => 1,
-   constant_values => {
-      posted   => 'NOW()',
-      acquired => '',
-   },
    column_map      => [
       { src_col => 'date',
         dst_col => { db=>'test', tbl=>'data_report', col=>'posted' },
@@ -227,21 +224,28 @@ make_column_map(
    ],
 );
 
+$plan = $column_map->insert_plan($schema->get_table('test', 'data_report'));
 is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(date posted acquired)],
-   "Manual column map"
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'date',     ColumnMap::COLUMN, 'date', ],
+            [ 'posted',   ColumnMap::COLUMN, 'date', ],
+            [ 'acquired', ColumnMap::COLUMN, 'hour', ],
+         ],
+      }
+   ],
+   "data_report insert plan with column map"
 );
 
 make_column_map(
    files           => ["$in/dump002.txt"],
    src_db          => 'test',
    src_tbl         => 'raw_data',
+   dst_db          => 'test',
+   dst_tbl         => 'data',
    foreign_keys    => 1,
-   constant_values => {
-      posted   => 'NOW()',
-      acquired => '',
-   },
    column_map      => [
       { src_col  => 'date',
         map_once => 1,  # XXX
@@ -253,11 +257,154 @@ make_column_map(
    ],
 );
 
+$plan = $column_map->insert_plan($schema->get_table('test', 'data_report'));
 is_deeply(
-   $column_map->mapped_columns($schema->get_table('test', 'data_report')),
-   [qw(posted acquired)],
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'posted',   ColumnMap::COLUMN, 'date', ],
+            [ 'acquired', ColumnMap::COLUMN, 'hour', ],
+         ],
+      }
+   ],
    "Manual column map once"
+) or print Dumper($plan);
+
+# ############################################################################
+# Two fk refs requiring two inserts.
+# ############################################################################
+make_column_map(
+   files           => ["$trunk/common/t/samples/CopyRowsNormalized/two-fk.sql"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data',
+   dst_db          => 'test',
+   dst_tbl         => 'data',
+   foreign_keys    => 1,
+   constant_values => {
+      date    => '2011-07-06',
+      posted  => 'NOW()',
+   },
+   column_map      => [
+      { src_col => 'account_number_1',
+        dst_col => { db=>'test', tbl=>'account', col=>'account_number' },
+        group_number => 1,
+      },
+      { src_col => 'name_1',
+        dst_col => { db=>'test', tbl=>'account', col=>'name' },
+        group_number => 1,
+      },
+      { src_col => 'account_number_2',
+        dst_col => { db=>'test', tbl=>'account', col=>'account_number' },
+        group_number => 2,
+      },
+      { src_col => 'name_2',
+        dst_col => { db=>'test', tbl=>'account', col=>'name' },
+        group_number => 2,
+      },
+   ],
+   foreign_key_map => [
+      { db  => 'test',
+        tbl => 'data_report',
+        col => 'parent_account',
+        group_number => 1,
+      },
+   ],
 );
+
+$data_report_tbl = $schema->get_table('test', 'data_report');
+my $account_tbl  = $schema->get_table('test', 'account');
+my $data_tbl     = $schema->get_table('test', 'data');
+
+$plan = $column_map->insert_plan($account_tbl);
+is_deeply(
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'account_number',
+              ColumnMap::COLUMN,
+              'account_number_1',
+            ],
+            [ 'name',
+               ColumnMap::COLUMN,
+               'name_1',
+            ]
+         ],
+      },
+      {  group_number => 1,
+         columns      => [
+            [ 'account_number',
+              ColumnMap::COLUMN,
+              'account_number_2',
+            ],
+            [ 'name',
+               ColumnMap::COLUMN,
+               'name_2',
+            ],
+         ],
+      }
+   ],
+   'Insert plan for account'
+) or print Dumper($plan);
+
+$plan = $column_map->insert_plan($data_report_tbl);
+is_deeply(
+   $plan,
+   [ # inserts
+      {  group_number => 0,
+         columns      => [
+            [ 'date',
+              ColumnMap::CONSTANT,
+              '2011-07-06',
+            ],
+            [ 'posted',
+               ColumnMap::CONSTANT,
+               'NOW()',
+            ],
+            [ 'parent_account',
+               ColumnMap::SELECTED_ROW,
+               { tbl   => $account_tbl,
+                 cols  => { id => 'parent_account' },
+                 where => \$account_tbl->{last_inserted_row}->[0],
+               },
+            ],
+         ],
+      },
+   ],
+   'Insert plan for data_report'
+) or print Dumper($plan);
+
+$plan = $column_map->insert_plan($data_tbl);
+is_deeply(
+   $plan,
+   [
+      {  group_number => 0,
+         columns      => [
+            [ 'data_report',
+               ColumnMap::SELECTED_ROW,
+               {
+                  tbl   => $data_report_tbl,
+                  cols  => { id => 'data_report' },
+                  where => \$data_report_tbl->{last_inserted_row}->[0],
+               },
+            ],
+            [ 'sub_account',
+               ColumnMap::SELECTED_ROW,
+               {  tbl   => $account_tbl,
+                  cols  => { id => 'sub_account' },
+                  where => \$account_tbl->{last_inserted_row}->[1],
+               },
+            ],
+            [ 'data1',
+               ColumnMap::COLUMN,
+               'data1',
+            ],
+         ],
+      }
+   ],
+   'Insert plan for data'
+) or print Dumper($plan);
 
 # #############################################################################
 # Done.

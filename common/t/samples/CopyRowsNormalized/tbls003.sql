@@ -1,7 +1,5 @@
 --
--- Host: localhost    Database: test
--- ------------------------------------------------------
--- Server version	5.1.53-log
+-- Database: test
 
 DROP TABLE IF EXISTS `denorm_items`;
 CREATE TABLE `denorm_items` (
@@ -11,9 +9,13 @@ CREATE TABLE `denorm_items` (
   PRIMARY KEY (`id`)
 ) ENGINE=MyISAM AUTO_INCREMENT=7 DEFAULT CHARSET=latin1;
 
-LOCK TABLES `denorm_items` WRITE;
-INSERT INTO `denorm_items` VALUES (1,'t1','red'),(2,'t2','red'),(3,'t2','blue'),(4,'t3','black'),(5,'t4','orange'),(6,'t5','green');
-UNLOCK TABLES;
+INSERT INTO `denorm_items` VALUES
+  (1,'t1','red'),
+  (2,'t2','red'),
+  (3,'t2','blue'),
+  (4,'t3','black'),
+  (5,'t4','orange'),
+  (6,'t5','green');
 
 DROP TABLE IF EXISTS `types`;
 CREATE TABLE `types` (

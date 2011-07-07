@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 49;
+   plan tests => 52;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -103,16 +103,17 @@ sub make_copier {
    };
    
    my $column_map = new ColumnMap(
-      src_tbl         => $schema->get_table($args{src_db}, $args{src_tbl}),
-      Schema          => $schema,
-      constant_values => $args{constant_values},
-      column_map      => $args{column_map},
-      ignore_columns  => $args{ignore_columns},
+      src_tbl                => $schema->get_table($args{src_db}, $args{src_tbl}),
+      dst_tbls               => \@dst_tbls,
+      Schema                 => $schema,
+      constant_values        => $args{constant_values},
+      column_map             => $args{column_map},
+      foreign_key_column_map => $args{fk_column_map},
+      ignore_columns         => $args{ignore_columns},
    );
    foreach my $dst_tbl ( @dst_tbls ) {
-      if ( !$column_map->mapped_columns($dst_tbl) ) {
-         $column_map->map_foreign_table($dst_tbl)
-            or die "Table $dst_tbl->{db}.$dst_tbl->{tbl} does not map";
+      if ( !$column_map->insert_plan($dst_tbl) ) {
+         die "No insert plan for table $dst_tbl->{db}.$dst_tbl->{tbl}";
       }
    }
 
@@ -515,7 +516,7 @@ is_deeply(
    $rows,
    [
       [1,   't1'],
-      [2,   't2'],
+      [2,   't2'], # dupe
       [3,   't2'],
       [4,   't3'],
       [5,   't4'],
@@ -529,7 +530,7 @@ is_deeply(
    $rows,
    [
       [1,   'red'   ],
-      [2,   'red'   ],
+      [2,   'red'   ], # dupe
       [3,   'blue'  ],
       [4,   'black' ],
       [5,   'orange'],
@@ -543,8 +544,8 @@ is_deeply(
    $rows,
    [
       [1, 1, 1],
-      [2, 2, 2],
-      [3, 3, 3],
+      [2, 2, 1], # XXX
+      [3, 2, 3], # XXX
       [4, 4, 4],
       [5, 5, 5],
       [6, 6, 6],
@@ -880,6 +881,87 @@ is_deeply(
    ],
    'data rows (duplicate `name` column)'
 );
+
+# ###########################################################################
+# Two insert groups.
+# ###########################################################################
+$sb->load_file("master", "$in/two-fk.sql");
+@ARGV = ('-d', 'test');
+$o->get_opts();
+$copy_rows = make_copier(
+   foreign_keys        => 1,
+   txn_size            => 100,
+   insert_ignore       => 1,
+   auto_increment_gaps => 0,
+   src_db              => 'test',
+   src_tbl             => 'raw_data',
+   column_map          => [
+      { src_col      => 'name_1',
+        group_number => 1,
+        dst_col      => { db => 'test', tbl => 'account', col => 'name' },
+      },
+      { src_col      => 'account_number_1',
+        group_number => 1,
+        dst_col      => { db => 'test', tbl => 'account', col => 'account_number' },
+      },
+      { src_col      => 'name_2',
+        group_number => 2,
+        dst_col      => { db => 'test', tbl => 'account', col => 'name' },
+      },
+      { src_col      => 'account_number_2',
+        group_number => 2,
+        dst_col      => { db => 'test', tbl => 'account', col => 'account_number' },
+      },
+   ],
+   fk_column_map       => [
+      { db => 'test', tbl => 'data', col => 'sub_account', group_number => 2 },
+   ],
+   dst_tbls            => [
+      ['test', 'account'],
+      ['test', 'data_report'],
+      ['test', 'data'],
+   ],
+);
+
+$copy_rows->copy();
+
+$rows = $dbh->selectall_arrayref('select * from test.account order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 'a'],
+      [2, 2, 'b'],
+      [3, 3, 'c'],
+      [4, 4, 'd'],
+      [5, 5, 'e'],
+      [6, 6, 'f']
+   ],
+   'account rows (two inserts)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-05-01', '2011-06-01 23:55:58', 1],
+      [2, '2011-05-01', '2011-06-01 23:55:58', 4],
+   ],
+   'data_report rows (two inserts)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 10],
+      [1, 2, 11],
+      [1, 3, 12],
+      [2, 4, 13],
+      [2, 5, 14],
+      [2, 6, 15],
+   ],
+   'data rows (two inserts)'
+) or print Dumper($rows);
 
 # #############################################################################
 # Done.

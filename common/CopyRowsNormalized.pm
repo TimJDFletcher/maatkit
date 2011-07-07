@@ -114,63 +114,76 @@ sub new {
    # For each destination, we need an INSERT statement.  Inserted values
    # will come from the SELECT statement(s) above.  The ColumnMap tells us
    # which values from the source should be inserted into the given dest.
+   my @inserts;
+   DST_TBL:
    foreach my $dst_tbl ( @{$dst->{tbls}} ) {
-      my $cols = $column_map->mapped_columns($dst_tbl);
-      my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
-               . ($args{insert_ignore}  ? ' IGNORE' : '')
-               . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
-               . ' (' . join(', ', @$cols) . ')'
-               . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
+      INSERT_GROUP:
+      foreach my $insert_group ( @{$column_map->insert_plan($dst_tbl)} ) {
+         my $cols = $column_map->insert_columns($insert_group);
+         my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
+                  . ($args{insert_ignore}  ? ' IGNORE' : '')
+                  . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+                  . ' (' . join(', ', @$cols) . ')'
+                  . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
 
-      # Append a trace msg so someone looking through binlogs can tell
-      # where these inserts originated and what they meant to do.
-      $sql .= " /* CopyRowsNormalized "
-                    . "src_tbl:$src->{tbl}->{db}.$src->{tbl}->{tbl} "
-                    . "txn_size:$txn_size pid:$PID "
-                    . ($ENV{USER} ? "user:$ENV{USER} " : "")
-                    . "*/";
+         # Append a trace msg so someone looking through binlogs can tell
+         # where these inserts originated and what they meant to do.
+         $sql .= " /* CopyRowsNormalized "
+                       . "src_tbl:$src->{tbl}->{db}.$src->{tbl}->{tbl} "
+                       . "group:$insert_group->{group_number} "
+                       . "txn_size:$txn_size pid:$PID "
+                       . ($ENV{USER} ? "user:$ENV{USER} " : "")
+                       . "*/";
 
-      MKDEBUG && _d($sql);
-      print '-- ', $sql, "\n" if $args{print};
-      my $sth = $dst->{dbh}->prepare($sql);
-      $dst_tbl->{insert} = { sth => $sth, cols => $cols };
+         MKDEBUG && _d($sql);
+         print '-- ', $sql, "\n" if $args{print};
 
-      my $pk = $dst_tbl->{tbl_struct}->{keys}->{PRIMARY};
-      if ( $pk ) {
-         my $auto_inc_col
-            = $dst_tbl->{tbl_struct}->{is_autoinc}->{$pk->{cols}->[0]}
-            ? $pk->{cols}->[0]
-            : undef;
-         MKDEBUG && _d('PRIMARY KEY auto inc col:', $auto_inc_col);
+         my $sth    = $dst->{dbh}->prepare($sql);
+         my $insert = {
+            tbl          => $dst_tbl,
+            cols         => $cols,
+            sth          => $sth,
+            insert_group => $insert_group,
+         };
 
-         if ( !$auto_inc_gaps
-              && $auto_inc_col
-              && $args{insert_ignore}
-              && !grep { $_ eq $auto_inc_col } @$cols ) {
-            MKDEBUG && _d('Checking auto inc col before INSERT');
-            my $sql = "SELECT 1 FROM $dst_tbl->{db}.$dst_tbl->{tbl} WHERE "
-                    . join(' AND ', map { "$_=?" } @$cols)
-                    . " LIMIT 1";
-            MKDEBUG && _d($sql);
-            $dst_tbl->{insert}->{check_for_row_sth}
-               = $dst->{dbh}->prepare($sql);
+         my $pk = $dst_tbl->{tbl_struct}->{keys}->{PRIMARY};
+         if ( $pk ) {
+            my $auto_inc_col
+               = $dst_tbl->{tbl_struct}->{is_autoinc}->{$pk->{cols}->[0]}
+               ? $pk->{cols}->[0]
+               : undef;
+            MKDEBUG && _d('PRIMARY KEY auto inc col:', $auto_inc_col);
+
+            if ( !$auto_inc_gaps
+                 && $auto_inc_col
+                 && $args{insert_ignore}
+                 && !grep { $_ eq $auto_inc_col } @$cols ) {
+               MKDEBUG && _d('Checking auto inc col before INSERT');
+               my $sql = "SELECT 1 FROM $dst_tbl->{db}.$dst_tbl->{tbl} WHERE "
+                       . join(' AND ', map { "$_=?" } @$cols)
+                       . " LIMIT 1";
+               MKDEBUG && _d($sql);
+               $insert->{check_for_row_sth} = $dst->{dbh}->prepare($sql);
+            }
+
+            #if ( $args{foreign_keys} ) {
+            #   $dst_tbl->{insert}->{last_insert_id}
+            #      = _make_last_insert_id_callback(
+            #         %args,
+            #         dbh          => $dst->{dbh},
+            #         tbl          => $dst_tbl,
+            #         cols         => $cols,
+            #         auto_inc_col => $auto_inc_col,
+            #      );
+            #}
          }
+         else {
+            MKDEBUG && _d('Table has no PRIMARY KEY');
+         } 
 
-         if ( $args{foreign_keys} ) {
-            $dst_tbl->{insert}->{last_insert_id}
-               = _make_last_insert_id_callback(
-                  %args,
-                  dbh          => $dst->{dbh},
-                  tbl          => $dst_tbl,
-                  cols         => $cols,
-                  auto_inc_col => $auto_inc_col,
-               );
-         }
-      }
-      else {
-         MKDEBUG && _d('Table has no PRIMARY KEY');
-      } 
-   }
+         push @inserts, $insert;
+      } # INSERT_GROUP
+   } # DST_TBL
 
    my $start_txn_sth = $dst->{dbh}->prepare('START TRANSACTION');
    my $commit_sth    = $dst->{dbh}->prepare('COMMIT');
@@ -184,6 +197,7 @@ sub new {
       chunkno       => 0,              # incr in _copy_rows_in_chunk()
       start_txn_sth => $start_txn_sth,
       commit_sth    => $commit_sth,
+      inserts       => \@inserts,
    };
 
    return bless $self, $class;
@@ -351,7 +365,7 @@ sub _copy_rows_in_chunk {
    $stats->{chunks}++ if $stats;
 
    MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
-   MKDEBUG && _d($sth->{Statement});
+   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @params);
    if ( $print ) {
       print $sth->{Statement}, "\n" if $print;
       print "-- Bind values: "
@@ -385,15 +399,19 @@ sub _copy_rows_in_chunk {
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
-      foreach my $dst_tbl ( @$dst_tbls ) {
-         MKDEBUG && _d('Inserting row into', $dst_tbl->{db}, $dst_tbl->{tbl});
-         my $insert   = $dst_tbl->{insert};
+      foreach my $insert ( @$inserts ) {
+         my $dst_tbl      = $insert->{tbl};
+         my $dst_cols     = $insert->{cols};
+         my $insert_group = $insert->{insert_group};
+         MKDEBUG && _d('Inserting source row into dest table',
+            $dst_tbl->{db}, $dst_tbl->{tbl},
+            'for insert group', $insert_group->{group_number});
 
-         my $dst_cols = $insert->{cols};
          my $dst_row  = $column_map->map_values(
-            dbh     => $dst_dbh,
-            src_row => $src_row,
-            dst_tbl => $dst_tbl,
+            dbh          => $dst_dbh,
+            src_row      => $src_row,
+            dst_tbl      => $dst_tbl,
+            insert_group => $insert_group,
          );
 
          # ##################################################################
@@ -401,8 +419,8 @@ sub _copy_rows_in_chunk {
          # ##################################################################
          my $insert_row = 1;
          if ( my $check_for_row_sth = $insert->{check_for_row_sth} ) {
-            MKDEBUG && _d($check_for_row_sth->{Statement});
-
+            MKDEBUG && _d($check_for_row_sth->{Statement},
+               'bind values:', map { $dst_row->{$_} } @$dst_cols);
             if ( $print ) {
                print $check_for_row_sth->{Statement}, "\n";
                print "-- Bind values: "
@@ -428,7 +446,8 @@ sub _copy_rows_in_chunk {
          # Insert the source row into the dest table.
          # ##################################################################
          if ( $insert_row ) {
-            MKDEBUG && _d($insert->{sth}->{Statement});
+            MKDEBUG && _d($insert->{sth}->{Statement},
+               'bind values:', map { $dst_row->{$_} } @$dst_cols);
             if ( $print ) {
                print $insert->{sth}->{Statement}, "\n";
                print "-- Bind values: "
@@ -446,18 +465,18 @@ sub _copy_rows_in_chunk {
          # ##################################################################
          # Select the row back from the dest table to get its last insert id.
          # ##################################################################
-         if ( my $last_insert_id = $insert->{last_insert_id} ) {
-            $dst_tbl->{last_insert_id} = $last_insert_id->(
-               dbh   => $dst_dbh,
-               tbl   => $dst_tbl,
-               row   => $dst_row,
-               cols  => $dst_cols,
-               sth   => $insert->{sth},
-               stats => $stats,
-            );
-            MKDEBUG && _d('Last insert id:',
-               Dumper($dst_tbl->{last_insert_id}));
-         }
+         #if ( my $last_insert_id = $insert->{last_insert_id} ) {
+         #   $dst_tbl->{last_insert_id} = $last_insert_id->(
+         #      dbh   => $dst_dbh,
+         #      tbl   => $dst_tbl,
+         #      row   => $dst_row,
+         #      cols  => $dst_cols,
+         #      sth   => $insert->{sth},
+         #      stats => $stats,
+         #   );
+         #   MKDEBUG && _d('Last insert id:',
+         #      Dumper($dst_tbl->{last_insert_id}));
+         #}
 
          $last_row = $src_row;
       } # DEST_TABLE
