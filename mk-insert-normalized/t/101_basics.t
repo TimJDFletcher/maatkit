@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 30;
+   plan tests => 33;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -506,8 +506,62 @@ is_deeply(
    'data rows (duplicate `name` column)'
 );
 
+# ###########################################################################
+# Two insert groups.
+# ###########################################################################
+$sb->load_file("master", "common/t/samples/CopyRowsNormalized/two-fk.sql");
+$dbh->do('use test');
+
+output(
+   sub { mk_insert_normalized::main(
+      '--source', "F=$cnf,D=test,t=raw_data",
+      '--dest',   "t=data",
+      '--column-map', "$trunk/$in/two-fk-column-map.txt",
+      '--foreign-key-column-map', "$trunk/$in/two-fk-fk-column-map.txt",
+      qw(--insert-ignore --no-auto-increment-gaps),
+      qw(--databases test --execute)) },
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.account order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 'a'],
+      [2, 2, 'b'],
+      [3, 3, 'c'],
+      [4, 4, 'd'],
+      [5, 5, 'e'],
+      [6, 6, 'f']
+   ],
+   'account rows (two inserts)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data_report order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-05-01', '2011-06-01 23:55:58', 1],
+      [2, '2011-05-01', '2011-06-01 23:55:58', 4],
+   ],
+   'data_report rows (two inserts)'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.data order by data_report');
+is_deeply(
+   $rows,
+   [
+      [1, 1, 10],
+      [1, 2, 11],
+      [1, 3, 12],
+      [2, 4, 13],
+      [2, 5, 14],
+      [2, 6, 15],
+   ],
+   'data rows (two inserts)'
+);
+
 # #############################################################################
 # Done.
 # #############################################################################
-#$sb->wipe_clean($dbh);
+$sb->wipe_clean($dbh);
 exit;

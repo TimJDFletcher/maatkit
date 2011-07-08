@@ -4296,6 +4296,9 @@ sub main {
          . $dp->as_string($dst_dsn);
    }
 
+   foreach my $dsn ( $src_dsn, $dst_dsn ) {
+      map { $dsn->{$_} = lc $dsn->{$_} } qw(D t)
+   }
    if ( $o->get('print') ) {
       print "-- Source: " . $dp->as_string($src_dsn) . "\n";
       print "-- Dest: " . $dp->as_string($dst_dsn) . "\n";
@@ -4346,17 +4349,48 @@ sub main {
          next if $line =~ m/^\s*$/;
          next if $line =~ m/^\s*#/;
          MKDEBUG && _d($line);
-         my ($src_col, $dst_col, $map_once)
-            = $line =~ m/^\s*(\S+)\s+(\S+)(?:\s+(!))?/;
-         MKDEBUG && _d('src col:', $src_col, 'dest col:', $dst_col,
-            'map once:', $map_once);
+
+         my ($src_col, $dst_col, $opts) = $line =~ m/^\s*(\S+)\s+(\S+)(.*)/;
          my ($db, $tbl, $col) = split /\./, $dst_col;
+         my @opts = split /\s+/, $opts;
          my $map = {
             src_col  => $src_col,
-            map_once => ($map_once || '') eq '!' ? 1 : 0,
             dst_col  => { db=>$db, tbl=>$tbl, col=>$col },
          };
+
+         if ( grep { $_ eq '!' } @opts ) {
+            $map->{map_once} = 1;
+         }
+
+         my @groupno = grep { m/\d+/ } @opts;
+         if ( scalar @groupno ) {
+            die "Column map specifies more than one insert group number: $line"
+               if @groupno > 1;
+            $map->{group_number} = $groupno[0];
+         }
+
+         MKDEBUG && _d(Dumper($map));
          push @manual_column_map, $map;
+      }
+      close $fh;
+   }
+
+   # ########################################################################
+   # Parse fk column map file.
+   # ########################################################################
+   my @fk_column_map;
+   if ( my $file = $o->get('foreign-key-column-map') ) {
+      MKDEBUG && _d('Reading fk column map from', $file);
+      open my $fh, '<', $file or die "Cannot open $file: $OS_ERROR";
+      while (defined(my $line = <$fh>)) {
+         next if $line =~ m/^\s*$/;
+         next if $line =~ m/^\s*#/;
+         MKDEBUG && _d($line);
+         my ($fk_col, $groupno) = $line =~ m/^\s*(\S+)\s+(\d+)/;
+         my ($db, $tbl, $col) = split /\./, $fk_col;
+         my $map = {db=>$db, tbl=>$tbl, col=>$col, group_number=>$groupno};
+         MKDEBUG && _d(Dumper($map));
+         push @fk_column_map, $map;
       }
       close $fh;
    }
@@ -4404,13 +4438,14 @@ sub main {
    };
 
    my $column_map = new ColumnMap(
-      src_tbl         => $schema->get_table($src_dsn->{D}, $src_dsn->{t}),
-      dst_tbls        => \@dst_tbls,
-      Schema          => $schema,
-      constant_values => $constant_values,
-      ignore_columns  => $o->get('ignore-columns'),
-      column_map      => \@manual_column_map,
-      print           => $o->get('print'),
+      src_tbl               => $schema->get_table($src_dsn->{D}, $src_dsn->{t}),
+      dst_tbls              => \@dst_tbls,
+      Schema                => $schema,
+      constant_values       => $constant_values,
+      ignore_columns        => $o->get('ignore-columns'),
+      column_map            => \@manual_column_map,
+      foreign_key_column_map=> \@fk_column_map,
+      print                 => $o->get('print'),
    );
    foreach my $dst_tbl ( @dst_tbls ) {
       if ( !$column_map->insert_plan($dst_tbl) ) {
@@ -4785,7 +4820,11 @@ File with manual L<"--source"> column to L<"--dest"> column mappings.
 By default the tool maps source table columns to destination table columns
 with the same name, or it uses L<"--constant-values">.  You can map source
 to destination columns manually in a file with one line for each mapping
-like:
+with this format:
+
+   SOURCE_COLUMN  DEST_COLUMN  OPTIONS
+
+For example:
 
    foo  db.tbl.bar
 
@@ -4794,16 +4833,64 @@ C<db.tbl>.  The destination column must specify a database and table and
 cannot be backtick (`) quoted.  Whitespace around and between the values is
 ignored, so neither column name can contain spaces.
 
+C<OPTIONS> can be one or more of the following characters, separated by
+spaces:
+
+=over
+
+=item ! (map once)
+
 Since normally a L<"--source"> columnn can map to many L<"--dest"> columns,
 you can specify a third value after the destination column to prevent the
 specified source column from mapping to anywhere else:
 
-   foo  db.tbl.bar  !
+   foo  db.tbl.bar !
 
 The exclamation mark makes L<"--source"> column C<foo> map only once to
 L<"--dest"> column C<bar>.  This is helpful if table C<db.tbl> also has
 a column named C<foo> because without the exclamation mark, C<foo> will
 map manually to C<db.tbl.bar> and then map automatically to C<db.tb.foo>.
+
+=item N (insert group)
+
+N is an integer >= 1 that specifies an insert group number.  By default,
+all columns are in insert group 1.  Insert groups are used to create N
+inserts into a single L<"--dest"> table by inserting the values of grouped
+columns.  For example, if the source table has these columns,
+
+   city_FL    -- city in Florida
+   street_FL  -- street in Florida
+   city_GA    -- city in Georgia
+   street_GA  -- street in Georgia
+
+then a column map with these lines,
+
+   city_FL    db.place.city    1
+   street_FL  db.place.street  1
+   city_GA    db.place.city    2
+   street_GA  db.place.street  2
+
+will cause two inserts into C<db.place>, the first using values from source
+columns C<city_FL> and C<street_FL> and the second using C<city_GA> and
+C<street_GA>.
+
+Insert groups are typically used by a L<"--foreign-key-column-map"> to
+make a L<"--dest"> table table references a row with values from a specific
+insert group.
+
+Certain rules and limitations apply:
+
+=over
+
+=item * N must be >= 1 and sequential; do not skip numbers.
+
+=item * All columns in an insert group must belong to the same table.
+
+=item * You must map all columns for a table with more than 1 insert group, else un-mapped columns will default to insert group 1 and not be inserted with the other insert group.
+
+=back
+
+=back
 
 =item --config
 
@@ -4858,6 +4945,43 @@ inserts rows into referenced tables first.
 =item --execute
 
 Insert data into normalized L<"--dest"> table.  See also L<"--print">.
+
+=item --foreign-key-column-map
+
+type: string
+
+File with L<"--dest"> table foreign key columm to insert group mappings.
+By default, L<"--dest"> table foreign key columns are referenced to the
+last row inserted into the referenced table.  If no L<"--column-map"> is
+specified or if all columns use default insert group 1, then the last row
+inserted is the only row, but if multiple insert groups are used, then there
+are multiple "last" rows.  A foreign key column map specifies which row
+a foriegn key column should reference by specifying its insert group number.
+
+The foreign key column map file specifies one L<"--dest"> table foriegn
+key column and insert group number per line.  The format is:
+
+   DEST_TABLE_FK_COLUMN  INSERT_GROUP_NUBMER
+
+Using the Florida/Georgia insert group example given for L<"--column-map">,
+if the foreign key column map file specifies,
+
+   db.Florida.place_id  1
+   db.Georgia.palce_id  2
+
+then rows in table C<Florida> will references row in table C<place> with
+values from source table columns C<city_FL> and C<street_FL>, and similarly
+C<Georgia> rows will references C<place> rows with C<city_GA> and C<street_GA>
+values.  Without the foreign key column map, C<Florida> rows would reference
+the last row inserted into C<place> which would be Georgia values.
+
+C<DEST_TABLE_FK_COLUMN> must specify a database, table, and foreign key
+column.  In the above example, the foreign key columns are C<place_id>
+defined like,
+
+   FOREIGN KEY (`place_id`) REFERENCES `place` (`id`)
+
+Multi-column foreign key columns are not supported.
 
 =item --help
 
