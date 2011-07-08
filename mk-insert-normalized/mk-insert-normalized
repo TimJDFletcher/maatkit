@@ -4851,11 +4851,11 @@ L<"--dest"> column C<bar>.  This is helpful if table C<db.tbl> also has
 a column named C<foo> because without the exclamation mark, C<foo> will
 map manually to C<db.tbl.bar> and then map automatically to C<db.tb.foo>.
 
-=item N (insert group)
+=item N (insert group number)
 
 N is an integer >= 1 that specifies an insert group number.  By default,
-all columns are in insert group 1.  Insert groups are used to create N
-inserts into a single L<"--dest"> table by inserting the values of grouped
+all columns for a table are in insert group 1.  Insert groups are used to
+create N inserts into a L<"--dest"> table by inserting the values of grouped
 columns.  For example, if the source table has these columns,
 
    city_FL    -- city in Florida
@@ -4886,7 +4886,7 @@ Certain rules and limitations apply:
 
 =item * All columns in an insert group must belong to the same table.
 
-=item * You must map all columns for a table with more than 1 insert group, else un-mapped columns will default to insert group 1 and not be inserted with the other insert group.
+=item * You must map all columns for a table with more than 1 insert group, else un-mapped columns will default to insert group 1 and not be inserted with the other insert groups.
 
 =back
 
@@ -4950,7 +4950,7 @@ Insert data into normalized L<"--dest"> table.  See also L<"--print">.
 
 type: string
 
-File with L<"--dest"> table foreign key columm to insert group mappings.
+File with L<"--dest"> table foreign key columm to insert group number mappings.
 By default, L<"--dest"> table foreign key columns are referenced to the
 last row inserted into the referenced table.  If no L<"--column-map"> is
 specified or if all columns use default insert group 1, then the last row
