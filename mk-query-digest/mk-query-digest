@@ -12141,7 +12141,7 @@ sub main {
             dbh       => $qv_dbh,
             db        => $db_tbl[0],
             tbl       => $db_tbl[1],
-            all_privs => 1) )
+            all_privs => $o->get('check-privileges')) )
       {
          die "The query review table $db_tbl "
             . "does not exist or you do not have INSERT privileges";
@@ -12184,7 +12184,7 @@ sub main {
                dbh       => $qv_dbh2,
                db        => $hdb_tbl[0],
                tbl       => $hdb_tbl[1],
-               all_privs => 1) )
+               all_privs => $o->get('check-privileges')) )
          {
             die "The query review history table $hdb_tbl "
                . "does not exist or you do not have INSERT privileges";
@@ -14423,6 +14423,17 @@ One special case is new attributes for pre-existing query classes
 (see L<"--group-by"> about query classes).  New attributes will not be added
 to pre-existing query classes even if the attributes are detected before the
 L<"--check-attributes-limit"> limit.
+
+=item --[no]check-privileges
+
+default: yes
+
+Check privileges for L<"--review"> and L<"--review-history"> tables.
+By default, the tool checks and requires that the user has all privileges
+(SELECT, INSERT, UPDATE, and DELETE) on the L<"--review"> and
+L<"--review-history"> tables.  Specifying C<--no-check-privileges> disables
+these checks.  If disabled, you must ensure that the tool will be able
+to read and write to the tables, else the review functions may not work.
 
 =item --config
 

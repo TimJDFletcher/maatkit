@@ -1,5 +1,7 @@
 Changelog for mk-query-digest:
 
+   * Added --[no]check-privileges.
+
 2011-06-08: version 0.9.29
 
    * --statistics did not print if no events were processed.
