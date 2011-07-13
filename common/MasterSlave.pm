@@ -353,6 +353,7 @@ sub get_slave_status {
       MKDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
       $self->{not_a_slave}->{$dbh}++;
    }
+   return;
 }
 
 # Gets SHOW MASTER STATUS, with column names all lowercased, as a hashref.
@@ -793,6 +794,7 @@ sub repl_posn {
 sub get_slave_lag {
    my ( $self, $dbh ) = @_;
    my $stat = $self->get_slave_status($dbh);
+   return unless $stat;
    return $stat->{seconds_behind_master};
 }
 

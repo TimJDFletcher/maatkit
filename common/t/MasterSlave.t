@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 54;
+use Test::More tests => 56;
 
 use MasterSlave;
 use DSNParser;
@@ -250,7 +250,7 @@ ok(!$EVAL_ERROR, 'Detached slave');
 # 127.0.0.1:master
 # +- 127.0.0.1:slave1
 # +- 127.0.0.1:slave2
-is($ms->get_slave_status($slaves[0]), 0, 'slave 1 detached');
+is($ms->get_slave_status($slaves[0]), undef, 'slave 1 detached');
 is($ms->get_slave_status($slaves[1])->{master_port}, $port_for{master}, 'slave 2 port');
 is($ms->get_slave_status($slaves[2])->{master_port}, $port_for{master}, 'slave 3 port');
 
@@ -476,6 +476,17 @@ SKIP: {
    diag(`/tmp/12345/start >/dev/null`);
    diag(`/tmp/12346/start >/dev/null`);
 };
+
+is(
+   $ms->get_slave_lag($dbh),
+   undef,
+   "get_slave_lag() for master"
+);
+
+ok(
+   defined $ms->get_slave_lag($slaves[1]),
+   "get_slave_lag() for slave"
+);
 
 # #############################################################################
 # Done.
