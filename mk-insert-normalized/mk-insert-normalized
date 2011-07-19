@@ -4479,6 +4479,14 @@ sub main {
    if ( $o->get('execute') ) {
       $copy_rows->copy();
       $copy_rows->cleanup();
+
+      if ( $o->get('statistics') ) {
+         print "-- Statistics\n";
+         my $fmt = "-- %-20s %d\n";
+         foreach my $metric ( sort keys %$stats ) {
+            printf $fmt, $metric, ($stats->{$metric} || 0);
+         }
+      }
    }
 
    return 0;
@@ -5083,6 +5091,11 @@ Denormalized source table (required).  The given DSN requires D (database)
 and t (table) parts that specify the denormalized table from which rows
 will be copied to the normalized L<"--dest"> tables.  The source table must
 have a chunkable index; see L<"--chunk-index">.
+
+=item --statistics
+
+Print statistics about internal counters for L<"--execute">.  This option is
+mostly for development and debugging.
 
 =item --tables
 
