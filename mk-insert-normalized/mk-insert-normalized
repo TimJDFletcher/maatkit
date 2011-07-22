@@ -4469,7 +4469,7 @@ sub main {
       execute             => $o->get('execute'),
       replace             => $o->get('replace'),
       insert_ignore       => $o->get('insert-ignore'),
-      asc_first           => $o->get('ascend-first'),
+      asc_first           => $o->get('ascend-first') ? 1 : 0,
       auto_increment_gaps => $o->get('auto-increment-gaps'),
       foreign_keys        => 1,
       Quoter              => $q,
@@ -4653,14 +4653,6 @@ There are a lot of cases concerning table structures, foreign key constraints,
 indexes, column types, etc.  This tool tries to do everything automatically,
 but for best results you should consider these technical points.
 
-=head2 SOURCE TABLE CHUNK INDEX
-
-The tool chunks the L<"--source"> table using the L<"--chunk-index">.  By
-default, L<"--[no]ascend-first"> is true which means that only the first
-column in a multi-column chunk index is used.  This is more efficient and
-should work in most cases, but if not, then you need to specify
-C<--no-ascend-first>.
-
 =head2 DUPLICATE KEY VALUES
 
 If the denormalized L<"--source"> table has rows which will result in
@@ -4760,13 +4752,11 @@ L<"SYNOPSIS"> and usage information for details.
 
 =over
 
-=item --[no]ascend-first
-
-default: yes
+=item --ascend-first
 
 Ascend only the first column of a multi-column L<"--chunk-index">.  This is
-more efficient, but if the first column isn't unique then you may need disable
-this option by specifying C<--no-ascend-first>.
+more efficient, but if the first column isn't unique, then all rows won't
+be selected or an infinite loop could develop.
 
 =item --ask-pass
 
@@ -4806,8 +4796,7 @@ type: string; default: PRIMARY
 Index to use for chunking the L<"--source"> table.  To avoid excessive memory
 consumption, the L<"--source"> table is chunked by ascending L<"--chunk-index">
 columns and selecting L<"--txn-size"> number of rows each time.  The
-L<"--chunk-index"> can be multi-column, but by default only the first column
-is ascended; see L<"--[no]ascend-first"> to change this.
+L<"--chunk-index"> can be multi-column.
 
 For example, the default is to use the PRIMARY key.  If that index is specified
 on column C<id> and L<"--txn-size">=100, then the L<"--source"> table will
