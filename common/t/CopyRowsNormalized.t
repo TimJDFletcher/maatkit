@@ -110,6 +110,7 @@ sub make_copier {
       column_map             => $args{column_map},
       foreign_key_column_map => $args{fk_column_map},
       ignore_columns         => $args{ignore_columns},
+      Quoter                 => $q,
    );
    foreach my $dst_tbl ( @dst_tbls ) {
       if ( !$column_map->insert_plan($dst_tbl) ) {

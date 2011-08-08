@@ -61,6 +61,7 @@ use constant CONSTANT     => 3;
 #   src_tbl  - <Schema::get_table()> to map columns from.
 #   dst_tbls - Arrayref of <Schema::get_table()> hashrefs.
 #   Schema   - <Schema> object with tables to map tbl columns to.
+#   Quoter   - <Quoter> object.
 #
 # Optional Arguments:
 #   ignore_columns         - Hashref of src_tbl columns to ignore (not mapped),
@@ -74,7 +75,7 @@ use constant CONSTANT     => 3;
 #   ColumnMap object
 sub new {
    my ( $class, %args ) = @_;
-   my @required_args = qw(src_tbl dst_tbls Schema);
+   my @required_args = qw(src_tbl dst_tbls Schema Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
@@ -346,12 +347,14 @@ sub _make_select_row_sth {
    }
    my ($dbh, $params)       = @args{@required_args};
    my ($tbl, $cols, $where) = @{$params}{qw(tbl cols where)};
+   my $q                    = $self->{Quoter};
 
    my $sql
       = "SELECT "
-      . join(', ', map { "$_ AS $cols->{$_}" } sort keys %$cols)
-      . " FROM $tbl->{db}.$tbl->{tbl}"
-      . " WHERE " . join(' AND ', map { "$_=?" } sort keys %$$where)
+      . join(', ', map {
+            $q->quote($_) . " AS " . $q->quote($cols->{$_}) } sort keys %$cols)
+      . " FROM " . $q->quote($tbl->{db}, $tbl->{tbl})
+      . " WHERE " . join(' AND ',map { $q->quote($_)."=?" } sort keys %$$where)
       . " LIMIT 1";
 
    my $sth = $args{dbh}->prepare($sql);

@@ -89,7 +89,7 @@ sub new {
    # The first query selects the first N rows from the beginning of the
    # table, hence no WHERE.  The LIMIT is added later.
    my $first_sql   =  "SELECT /*!40001 SQL_NO_CACHE */ "
-                   . join(', ', @{$asc->{cols}})
+                   . join(', ', map { $q->quote($_) } @{$asc->{cols}})
                    . " FROM " . $q->quote(@{$src->{tbl}}{qw(db tbl)})
                    . " FORCE INDEX(`$index`)";
 
@@ -123,7 +123,7 @@ sub new {
          my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
                   . ($args{insert_ignore}  ? ' IGNORE' : '')
                   . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
-                  . ' (' . join(', ', @$cols) . ')'
+                  . ' (' . join(', ', map { $q->quote($_) } @$cols) . ')'
                   . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
 
          # Append a trace msg so someone looking through binlogs can tell
@@ -159,23 +159,14 @@ sub new {
                  && $args{insert_ignore}
                  && !grep { $_ eq $auto_inc_col } @$cols ) {
                MKDEBUG && _d('Checking auto inc col before INSERT');
-               my $sql = "SELECT 1 FROM $dst_tbl->{db}.$dst_tbl->{tbl} WHERE "
-                       . join(' AND ', map { "$_=?" } @$cols)
+               my $sql = "SELECT 1"
+                        . " FROM " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+                        . " WHERE "
+                        . join(' AND ', map { $q->quote($_)."=?" } @$cols)
                        . " LIMIT 1";
                MKDEBUG && _d($sql);
                $insert->{check_for_row_sth} = $dst->{dbh}->prepare($sql);
             }
-
-            #if ( $args{foreign_keys} ) {
-            #   $dst_tbl->{insert}->{last_insert_id}
-            #      = _make_last_insert_id_callback(
-            #         %args,
-            #         dbh          => $dst->{dbh},
-            #         tbl          => $dst_tbl,
-            #         cols         => $cols,
-            #         auto_inc_col => $auto_inc_col,
-            #      );
-            #}
          }
          else {
             MKDEBUG && _d('Table has no PRIMARY KEY');
@@ -201,115 +192,6 @@ sub new {
    };
 
    return bless $self, $class;
-}
-
-sub _make_last_insert_id_callback {
-   my ( %args ) = @_;
-   my @required_args = qw(tbl cols);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($tbl, $cols)   = @args{@required_args};
-   my ($auto_inc_col) = $args{auto_inc_col};
-   MKDEBUG && _d('Making callback to get last insert id from table',
-      $tbl->{db}, $tbl->{tbl});
-
-   my $tbl_pk = $tbl->{tbl_struct}->{keys}->{PRIMARY};
-
-
-   my $callback;
-   if ( $auto_inc_col ) {
-      if ( !grep { $_ eq $auto_inc_col } @$cols ) {
-         # sth->mysql_insertid won't work in cases when a duplicate row is
-         # inserted with INSERT IGNORE.  SELECT MAX(auto-inc-col) won't work
-         # for the same reason because the inserted dupe row may not be the
-         # max auto-inc-col value.  So unless the insert_ignore option is
-         # specified, we have to select the auto-inc-col based on the other
-         # columns just inserted.  Hopefully there's an index for those other
-         # columns.
-         if ( $args{insert_ignore} ) {
-            MKDEBUG && _d('Using fetch back value for auto inc column');
-            my $sql = "SELECT $auto_inc_col FROM $tbl->{db}.$tbl->{tbl} "
-                    . "WHERE "
-                    . join(' AND ', map { "$_=?" } @$cols)
-                    . " LIMIT 1";
-            MKDEBUG && _d($sql);
-            my $print   = $args{print};
-            my $execute = $args{execute};
-
-            my $sth = $args{dbh}->prepare($sql);
-            $callback = sub {
-               my ( %args ) = @_;
-               my ($row, $cols) = @args{qw(row cols)};
-
-               MKDEBUG && _d($sth->{Statement});
-               if ( $print ) {
-                  print $sth->{Statement}, "\n";
-                  print "-- Bind values: "
-                     . join(', ',
-                        map { defined $_ ? $_ : 'NULL' } @{$row}{@$cols})
-                     . "\n";
-               }
-
-               my $last_row;
-               if ( $execute ) {
-                  $sth->execute(@{$row}{@$cols});
-                  $last_row = $sth->fetchrow_arrayref();
-                  $sth->finish();
-               }
-               my %last_row_id = (
-                  $auto_inc_col => $last_row->[0],
-               );
-               return \%last_row_id;
-            };
-         }
-         else {
-            MKDEBUG && _d('Using last insert id');
-            $callback = sub {
-               my ( %args ) = @_;
-               my %last_row_id = (
-                  $auto_inc_col => $args{sth}->{mysql_insertid},
-               );
-               return \%last_row_id;
-            };
-         }
-      }
-      else {
-         MKDEBUG && _d('Using fetched value for auto inc column');
-         $callback = sub {
-            my ( %args ) = @_;
-            my %last_row_id = (
-               $auto_inc_col => $args{row}->{$auto_inc_col},
-            );
-            return \%last_row_id;
-         };
-      }
-   }
-   else {
-      my %have_col     = map { $_ => 1 } @$cols;
-      my @need_pk_cols = grep { !$have_col{$_} } @{$tbl_pk->{cols}};
-      if ( @need_pk_cols ) {
-         # This probably signals that the column map isn't complete,
-         # i.e. there's some dst col that isn't mapped which is needed
-         # to get the last insert id.
-         warn "Cannot get last insert ID for table $tbl->{db}.$tbl->{tbl} "
-            . "because primary key columns "
-            . join(', ', map { $need_pk_cols[$_] } 0..($#need_pk_cols-1))
-            . ", and $need_pk_cols[-1] "
-            . "are not selected and no AUTO_INCREMENT column exists";
-      }
-      else {
-         MKDEBUG && _d('Using fetched values for primary key columns');
-         $callback = sub {
-            my ( %args ) = @_;
-            my %last_row_id
-               = map { $_ => $args{row}->{$_} } @{$tbl_pk->{cols}};
-            return \%last_row_id;
-         };
-      }
-   }
-
-   return $callback;
 }
 
 sub copy {

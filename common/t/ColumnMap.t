@@ -84,6 +84,7 @@ sub make_column_map {
       constant_values => $args{constant_values},
       ignore_columns  => $args{ignore_columns},
       column_map      => $args{column_map},
+      Quoter          => $q,
    );
 }
 
