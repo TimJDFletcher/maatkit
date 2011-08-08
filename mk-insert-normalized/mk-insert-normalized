@@ -3375,7 +3375,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7582
+# ColumnMap package 7591
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3407,7 +3407,7 @@ use constant CONSTANT     => 3;
 
 sub new {
    my ( $class, %args ) = @_;
-   my @required_args = qw(src_tbl dst_tbls Schema);
+   my @required_args = qw(src_tbl dst_tbls Schema Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
@@ -3670,12 +3670,14 @@ sub _make_select_row_sth {
    }
    my ($dbh, $params)       = @args{@required_args};
    my ($tbl, $cols, $where) = @{$params}{qw(tbl cols where)};
+   my $q                    = $self->{Quoter};
 
    my $sql
       = "SELECT "
-      . join(', ', map { "$_ AS $cols->{$_}" } sort keys %$cols)
-      . " FROM $tbl->{db}.$tbl->{tbl}"
-      . " WHERE " . join(' AND ', map { "$_=?" } sort keys %$$where)
+      . join(', ', map {
+            $q->quote($_) . " AS " . $q->quote($cols->{$_}) } sort keys %$cols)
+      . " FROM " . $q->quote($tbl->{db}, $tbl->{tbl})
+      . " WHERE " . join(' AND ',map { $q->quote($_)."=?" } sort keys %$$where)
       . " LIMIT 1";
 
    my $sth = $args{dbh}->prepare($sql);
@@ -3795,7 +3797,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7582
+# CopyRowsNormalized package 7591
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -3843,7 +3845,7 @@ sub new {
    );
 
    my $first_sql   =  "SELECT /*!40001 SQL_NO_CACHE */ "
-                   . join(', ', @{$asc->{cols}})
+                   . join(', ', map { $q->quote($_) } @{$asc->{cols}})
                    . " FROM " . $q->quote(@{$src->{tbl}}{qw(db tbl)})
                    . " FORCE INDEX(`$index`)";
 
@@ -3869,7 +3871,7 @@ sub new {
          my $sql  = ($args{replace}        ? 'REPLACE' : 'INSERT')
                   . ($args{insert_ignore}  ? ' IGNORE' : '')
                   . " INTO " . $q->quote(@{$dst_tbl}{qw(db tbl)})
-                  . ' (' . join(', ', @$cols) . ')'
+                  . ' (' . join(', ', map { $q->quote($_) } @$cols) . ')'
                   . ' VALUES (' . join(', ', map { '?' } @$cols) . ')';
 
          $sql .= " /* CopyRowsNormalized "
@@ -3903,13 +3905,14 @@ sub new {
                  && $args{insert_ignore}
                  && !grep { $_ eq $auto_inc_col } @$cols ) {
                MKDEBUG && _d('Checking auto inc col before INSERT');
-               my $sql = "SELECT 1 FROM $dst_tbl->{db}.$dst_tbl->{tbl} WHERE "
-                       . join(' AND ', map { "$_=?" } @$cols)
+               my $sql = "SELECT 1"
+                        . " FROM " . $q->quote(@{$dst_tbl}{qw(db tbl)})
+                        . " WHERE "
+                        . join(' AND ', map { $q->quote($_)."=?" } @$cols)
                        . " LIMIT 1";
                MKDEBUG && _d($sql);
                $insert->{check_for_row_sth} = $dst->{dbh}->prepare($sql);
             }
-
          }
          else {
             MKDEBUG && _d('Table has no PRIMARY KEY');
@@ -3935,105 +3938,6 @@ sub new {
    };
 
    return bless $self, $class;
-}
-
-sub _make_last_insert_id_callback {
-   my ( %args ) = @_;
-   my @required_args = qw(tbl cols);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($tbl, $cols)   = @args{@required_args};
-   my ($auto_inc_col) = $args{auto_inc_col};
-   MKDEBUG && _d('Making callback to get last insert id from table',
-      $tbl->{db}, $tbl->{tbl});
-
-   my $tbl_pk = $tbl->{tbl_struct}->{keys}->{PRIMARY};
-
-
-   my $callback;
-   if ( $auto_inc_col ) {
-      if ( !grep { $_ eq $auto_inc_col } @$cols ) {
-         if ( $args{insert_ignore} ) {
-            MKDEBUG && _d('Using fetch back value for auto inc column');
-            my $sql = "SELECT $auto_inc_col FROM $tbl->{db}.$tbl->{tbl} "
-                    . "WHERE "
-                    . join(' AND ', map { "$_=?" } @$cols)
-                    . " LIMIT 1";
-            MKDEBUG && _d($sql);
-            my $print   = $args{print};
-            my $execute = $args{execute};
-
-            my $sth = $args{dbh}->prepare($sql);
-            $callback = sub {
-               my ( %args ) = @_;
-               my ($row, $cols) = @args{qw(row cols)};
-
-               MKDEBUG && _d($sth->{Statement});
-               if ( $print ) {
-                  print $sth->{Statement}, "\n";
-                  print "-- Bind values: "
-                     . join(', ',
-                        map { defined $_ ? $_ : 'NULL' } @{$row}{@$cols})
-                     . "\n";
-               }
-
-               my $last_row;
-               if ( $execute ) {
-                  $sth->execute(@{$row}{@$cols});
-                  $last_row = $sth->fetchrow_arrayref();
-                  $sth->finish();
-               }
-               my %last_row_id = (
-                  $auto_inc_col => $last_row->[0],
-               );
-               return \%last_row_id;
-            };
-         }
-         else {
-            MKDEBUG && _d('Using last insert id');
-            $callback = sub {
-               my ( %args ) = @_;
-               my %last_row_id = (
-                  $auto_inc_col => $args{sth}->{mysql_insertid},
-               );
-               return \%last_row_id;
-            };
-         }
-      }
-      else {
-         MKDEBUG && _d('Using fetched value for auto inc column');
-         $callback = sub {
-            my ( %args ) = @_;
-            my %last_row_id = (
-               $auto_inc_col => $args{row}->{$auto_inc_col},
-            );
-            return \%last_row_id;
-         };
-      }
-   }
-   else {
-      my %have_col     = map { $_ => 1 } @$cols;
-      my @need_pk_cols = grep { !$have_col{$_} } @{$tbl_pk->{cols}};
-      if ( @need_pk_cols ) {
-         warn "Cannot get last insert ID for table $tbl->{db}.$tbl->{tbl} "
-            . "because primary key columns "
-            . join(', ', map { $need_pk_cols[$_] } 0..($#need_pk_cols-1))
-            . ", and $need_pk_cols[-1] "
-            . "are not selected and no AUTO_INCREMENT column exists";
-      }
-      else {
-         MKDEBUG && _d('Using fetched values for primary key columns');
-         $callback = sub {
-            my ( %args ) = @_;
-            my %last_row_id
-               = map { $_ => $args{row}->{$_} } @{$tbl_pk->{cols}};
-            return \%last_row_id;
-         };
-      }
-   }
-
-   return $callback;
 }
 
 sub copy {
@@ -4446,6 +4350,7 @@ sub main {
       column_map            => \@manual_column_map,
       foreign_key_column_map=> \@fk_column_map,
       print                 => $o->get('print'),
+      Quoter                => $q,
    );
    foreach my $dst_tbl ( @dst_tbls ) {
       if ( !$column_map->insert_plan($dst_tbl) ) {
