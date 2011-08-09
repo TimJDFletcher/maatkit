@@ -3583,7 +3583,7 @@ sub join_quote {
 # ###########################################################################
 
 # ###########################################################################
-# MasterSlave package 7587
+# MasterSlave package 7595
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/MasterSlave.pm
@@ -3756,11 +3756,12 @@ sub get_connected_slaves {
    my $proc;
    eval {
       $proc = grep {
+         MKDEBUG && _d($_);
          m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
       } @{$dbh->selectcol_arrayref($sql)};
    };
    if ( $EVAL_ERROR ) {
-
+      MKDEBUG && _d($EVAL_ERROR);
       if ( $EVAL_ERROR =~ m/no such grant defined for user/ ) {
          MKDEBUG && _d('Retrying SHOW GRANTS without host; error:',
             $EVAL_ERROR);
@@ -3769,6 +3770,7 @@ sub get_connected_slaves {
          MKDEBUG && _d($sql);
          eval {
             $proc = grep {
+               MKDEBUG && _d($_);
                m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
             } @{$dbh->selectcol_arrayref($sql)};
          };
