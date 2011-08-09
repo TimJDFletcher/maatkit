@@ -237,11 +237,12 @@ sub get_connected_slaves {
    my $proc;
    eval {
       $proc = grep {
+         MKDEBUG && _d($_);
          m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
       } @{$dbh->selectcol_arrayref($sql)};
    };
    if ( $EVAL_ERROR ) {
-
+      MKDEBUG && _d($EVAL_ERROR);
       if ( $EVAL_ERROR =~ m/no such grant defined for user/ ) {
          # Try again without a host.
          MKDEBUG && _d('Retrying SHOW GRANTS without host; error:',
@@ -251,6 +252,7 @@ sub get_connected_slaves {
          MKDEBUG && _d($sql);
          eval {
             $proc = grep {
+               MKDEBUG && _d($_);
                m/ALL PRIVILEGES.*?\*\.\*|PROCESS/
             } @{$dbh->selectcol_arrayref($sql)};
          };
