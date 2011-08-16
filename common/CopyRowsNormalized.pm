@@ -58,6 +58,7 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #   insert_ignore       - INSERT IGNORE.
 #   auto_increment_gaps - Allow gaps in the auto inc col if insert_ignore
 #                         is true (default yes).
+#   warnings            - SHOW WARNINGS and ignore|warn|die if warnings
 #
 # Returns:
 #   CopyRowsNormalized object
@@ -179,6 +180,11 @@ sub new {
    my $start_txn_sth = $dst->{dbh}->prepare('START TRANSACTION');
    my $commit_sth    = $dst->{dbh}->prepare('COMMIT');
 
+   my $warnings_sth;
+   if ( $args{warnings} && lc($args{warnings}) ne 'ignore' ) {
+      $warnings_sth = $dst->{dbh}->prepare('SHOW WARNINGS');
+   }
+
    my $self = {
       %args,
       asc           => $asc,
@@ -188,6 +194,7 @@ sub new {
       chunkno       => 0,              # incr in _copy_rows_in_chunk()
       start_txn_sth => $start_txn_sth,
       commit_sth    => $commit_sth,
+      warnings_sth  => $warnings_sth,
       inserts       => \@inserts,
    };
 
@@ -234,30 +241,32 @@ sub _copy_rows_in_chunk {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($sth)  = @args{@required_args};
-   my @params = $args{params} ? @{$args{params}} : ();
+   my $params = $args{params} ? $args{params} : [];
 
    my $column_map = $self->{ColumnMap};
    my $dst_dbh    = $self->{dst}->{dbh};
    my $dst_tbls   = $self->{dst}->{tbls};
    my $stats      = $self->{stats};
    my $print      = $self->{print};
-   my $execute    = $self->{execute};
 
    $self->{chunkno}++;   
    $stats->{chunks}++ if $stats;
 
    MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
-   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @params);
+   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @$params);
    if ( $print ) {
       print $sth->{Statement}, "\n" if $print;
       print "-- Bind values: "
-         . join(', ', map { defined $_ ? $_ : 'NULL' } @params)
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params)
          . "\n";
    }
-   if ( $execute ) {
-      $sth->execute(@params);
-   }
 
+   # Reset context
+   $self->{context} = {};
+   $self->{context}->{select_sth}    = $sth;
+   $self->{context}->{select_params} = $params;
+
+   $sth->execute(@$params);
    MKDEBUG && _d('Got', $sth->rows(), 'rows');
    return unless $sth->rows();
 
@@ -267,10 +276,8 @@ sub _copy_rows_in_chunk {
       if ( $print ) {
          print $self->{start_txn_sth}->{Statement}, "\n";
       }
-      if ( $execute ) {
-         $self->{start_txn_sth}->execute();
-         $stats->{start_transaction}++ if $stats;
-      }
+      $self->{start_txn_sth}->execute();
+      $stats->{start_transaction}++ if $stats;
    }
 
    # Fetch and INSERT rows into destination tables.
@@ -278,10 +285,13 @@ sub _copy_rows_in_chunk {
    my $last_row;
    SOURCE_ROW:
    while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
+      $self->{context}->{src_row} = $src_row;
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
       foreach my $insert ( @$inserts ) {
+         $self->{context}->{insert} = $insert;
+
          my $dst_tbl      = $insert->{tbl};
          my $dst_cols     = $insert->{cols};
          my $insert_group = $insert->{insert_group};
@@ -295,6 +305,7 @@ sub _copy_rows_in_chunk {
             dst_tbl      => $dst_tbl,
             insert_group => $insert_group,
          );
+         $self->{context}->{dst_row} = $dst_row;
 
          # ##################################################################
          # Check if the row already exists in the dest table.
@@ -312,15 +323,14 @@ sub _copy_rows_in_chunk {
                   . "\n";
             }
 
-            if ( $execute ) {
-               $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
-               my $row = $check_for_row_sth->fetchrow_arrayref();
-               $check_for_row_sth->finish();
+            $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
+            my $row = $check_for_row_sth->fetchrow_arrayref();
+            $check_for_row_sth->finish();
 
-               if ( $row && defined $row->[0] ) {
-                  MKDEBUG && _d('Row already exists in dest table');
-                  $insert_row = 0;
-               }
+            if ( $row && defined $row->[0] ) {
+               MKDEBUG && _d('Row already exists in dest table');
+               $insert_row = 0;
+               $stats->{duplicate_dest_row}++ if $stats;
             }
          }
 
@@ -338,27 +348,29 @@ sub _copy_rows_in_chunk {
                      @$dst_cols)
                   . "\n";
             }
-            if ( $execute ) {
-               $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
-               $stats->{rows_inserted}++ if $stats;
+            $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
+            $stats->{rows_inserted}++ if $stats;
+
+            if ( $self->{warnings_sth} ) {
+               MKDEBUG && _d($self->{warnings_sth}->{Statement});
+               if ( $print ) {
+                  print $self->{warnings_sth}->{Statement}, "\n";
+               }
+               $self->{warnings_sth}->execute();
+               $stats->{show_warnings}++ if $stats;
+               my $warnings = $self->{warnings_sth}->fetchall_arrayref();
+               if ( $warnings && @$warnings ) {
+                  foreach my $warning ( @$warnings ) {
+                     print STDERR "Warning after INSERT: ",
+                        join(' ', @$warning), "\n";
+                     $stats->{"warning_" . $warning->[1]}++ if $stats;
+                  }
+                  $self->dump_context();
+                  die "Dying because of the warnings above"
+                     if ($self->{warnings} || '') eq 'die';
+               }
             }
          }
-
-         # ##################################################################
-         # Select the row back from the dest table to get its last insert id.
-         # ##################################################################
-         #if ( my $last_insert_id = $insert->{last_insert_id} ) {
-         #   $dst_tbl->{last_insert_id} = $last_insert_id->(
-         #      dbh   => $dst_dbh,
-         #      tbl   => $dst_tbl,
-         #      row   => $dst_row,
-         #      cols  => $dst_cols,
-         #      sth   => $insert->{sth},
-         #      stats => $stats,
-         #   );
-         #   MKDEBUG && _d('Last insert id:',
-         #      Dumper($dst_tbl->{last_insert_id}));
-         #}
 
          $last_row = $src_row;
       } # DEST_TABLE
@@ -370,10 +382,8 @@ sub _copy_rows_in_chunk {
       if ( $print ) {
          print $self->{commit_sth}->{Statement}, "\n";
       }
-      if ( $execute ) {
-         $self->{commit_sth}->execute();
-         $stats->{commit}++ if $stats;
-      }
+      $self->{commit_sth}->execute();
+      $stats->{commit}++ if $stats;
    }
 
    return $last_row;
@@ -382,6 +392,36 @@ sub _copy_rows_in_chunk {
 sub cleanup {
    my ( $self, %args ) = @_;
    # Nothing to cleanup, but caller is still going to call us.
+   return;
+}
+
+sub dump_context {
+   my ($self) = @_;
+   local $Data::Dumper::Indent = 0;
+   
+   print STDERR "Error context:\n";
+   print STDERR "\tChunk $self->{chunkno}\n";
+   if ( my $sth = $self->{context}->{select_sth} ) {
+      print STDERR "\t", $sth->{Statement}, "\n";
+   }
+   if ( my $params = $self->{context}->{select_params} ) {
+      print STDERR "\tBind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params) . "\n";
+   }
+   if ( my $src_row = $self->{context}->{src_row} ) {
+      print STDERR "\tSource row: ", Dumper($src_row), "\n";
+   }
+   if ( my $insert = $self->{context}->{insert} ) {
+      my $dst_cols = $insert->{cols};
+      print STDERR "\t", $insert->{sth}->{Statement}, "\n";
+      if ( my $dst_row = $self->{context}->{dst_row} ) {
+         print STDERR "\tBind values: "
+            . join(', ',
+               map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+               @$dst_cols)
+            . "\n";
+      }
+   }
    return;
 }
 

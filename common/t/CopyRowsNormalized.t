@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 52;
+   plan tests => 57;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -146,6 +146,7 @@ my $copy_rows = make_copier(
    src_tbl  => 't',
    dst_tbls => [['osc', '__new_t']],
    txn_size => 2,
+   warnings => 'die',
 );
 
 my $rows = $dbh->selectall_arrayref('select * from osc.__new_t');
@@ -205,6 +206,18 @@ is(
    $stats->{chunks},
    4,
    '4 chunks'
+);
+
+is(
+   $stats->{show_warnings},
+   5,
+   '5 SHOW WARNINGS'
+);
+
+is(
+   $stats->{warnings},
+   undef,
+   'No warnings'
 );
 
 # ###########################################################################
@@ -963,6 +976,50 @@ is_deeply(
    ],
    'data rows (two inserts)'
 ) or print Dumper($rows);
+
+# ###########################################################################
+# Break a copy to create and catch a warning.
+# ###########################################################################
+$sb->load_file("master", "common/t/samples/osc/tbl001.sql");
+
+# This z value will be truncated, causing a warning.
+$dbh->do('ALTER TABLE osc.__new_t DROP COLUMN `c`, ADD COLUMN `c` varchar(2)');
+$dbh->do('update osc.t set c="abcdef" where id=5');
+
+@ARGV = qw(-d osc);
+$o->get_opts();
+$copy_rows = make_copier(
+   src_db   => 'osc',
+   src_tbl  => 't',
+   dst_tbls => [['osc', '__new_t']],
+   txn_size => 2,
+   warnings => 'die',
+);
+
+$rows = $dbh->selectall_arrayref('select * from osc.t order by id');
+is_deeply(
+   $rows,
+   [ [qw(1 a)], [qw(2 b)], [qw(3 c)], [qw(4 d)], [qw(5 abcdef)] ],
+   'Source table has rows'
+);
+
+# Copy all rows from osc.t --> osc.__new_t.
+$output = output(
+   sub { $copy_rows->copy() },
+   stderr => 1,
+);
+
+like(
+   $output,
+   qr/Warning after INSERT: Warning 1265 Data truncated for column 'c'/,
+   'Print warning from SHOW WARNINGS'
+);
+
+like(
+   $output,
+   qr/Dying because of the warnings above/,
+   'Dies because of warnings'
+);
 
 # #############################################################################
 # Done.
