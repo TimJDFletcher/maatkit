@@ -3797,7 +3797,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7591
+# CopyRowsNormalized package 7599
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -3925,6 +3925,11 @@ sub new {
    my $start_txn_sth = $dst->{dbh}->prepare('START TRANSACTION');
    my $commit_sth    = $dst->{dbh}->prepare('COMMIT');
 
+   my $warnings_sth;
+   if ( $args{warnings} && lc($args{warnings}) ne 'ignore' ) {
+      $warnings_sth = $dst->{dbh}->prepare('SHOW WARNINGS');
+   }
+
    my $self = {
       %args,
       asc           => $asc,
@@ -3932,8 +3937,10 @@ sub new {
       next_sth      => $next_sth,
       asc_cols      => $asc->{scols},  # src tbl columns used for nibbling
       chunkno       => 0,              # incr in _copy_rows_in_chunk()
+      rowno         => 0,
       start_txn_sth => $start_txn_sth,
       commit_sth    => $commit_sth,
+      warnings_sth  => $warnings_sth,
       inserts       => \@inserts,
    };
 
@@ -3975,30 +3982,31 @@ sub _copy_rows_in_chunk {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($sth)  = @args{@required_args};
-   my @params = $args{params} ? @{$args{params}} : ();
+   my $params = $args{params} ? $args{params} : [];
 
    my $column_map = $self->{ColumnMap};
    my $dst_dbh    = $self->{dst}->{dbh};
    my $dst_tbls   = $self->{dst}->{tbls};
    my $stats      = $self->{stats};
    my $print      = $self->{print};
-   my $execute    = $self->{execute};
 
    $self->{chunkno}++;   
    $stats->{chunks}++ if $stats;
 
    MKDEBUG && _d('Fetching rows in chunk', $self->{chunkno}); 
-   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @params);
+   MKDEBUG && _d($sth->{Statement}, 'bind values:', map { $_ } @$params);
    if ( $print ) {
       print $sth->{Statement}, "\n" if $print;
       print "-- Bind values: "
-         . join(', ', map { defined $_ ? $_ : 'NULL' } @params)
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params)
          . "\n";
    }
-   if ( $execute ) {
-      $sth->execute(@params);
-   }
 
+   $self->{context} = {};
+   $self->{context}->{select_sth}    = $sth;
+   $self->{context}->{select_params} = $params;
+
+   $sth->execute(@$params);
    MKDEBUG && _d('Got', $sth->rows(), 'rows');
    return unless $sth->rows();
 
@@ -4007,20 +4015,23 @@ sub _copy_rows_in_chunk {
       if ( $print ) {
          print $self->{start_txn_sth}->{Statement}, "\n";
       }
-      if ( $execute ) {
-         $self->{start_txn_sth}->execute();
-         $stats->{start_transaction}++ if $stats;
-      }
+      $self->{start_txn_sth}->execute();
+      $stats->{start_transaction}++ if $stats;
    }
 
    my $inserts = $self->{inserts};
    my $last_row;
    SOURCE_ROW:
    while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
+      $self->{context}->{src_row} = $src_row;
+      $self->{context}->{chunk_rowno}++;
+      $self->{rowno}++;
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
       foreach my $insert ( @$inserts ) {
+         $self->{context}->{insert} = $insert;
+
          my $dst_tbl      = $insert->{tbl};
          my $dst_cols     = $insert->{cols};
          my $insert_group = $insert->{insert_group};
@@ -4034,6 +4045,7 @@ sub _copy_rows_in_chunk {
             dst_tbl      => $dst_tbl,
             insert_group => $insert_group,
          );
+         $self->{context}->{dst_row} = $dst_row;
 
          my $insert_row = 1;
          if ( my $check_for_row_sth = $insert->{check_for_row_sth} ) {
@@ -4048,15 +4060,14 @@ sub _copy_rows_in_chunk {
                   . "\n";
             }
 
-            if ( $execute ) {
-               $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
-               my $row = $check_for_row_sth->fetchrow_arrayref();
-               $check_for_row_sth->finish();
+            $check_for_row_sth->execute(@{$dst_row}{@$dst_cols});
+            my $row = $check_for_row_sth->fetchrow_arrayref();
+            $check_for_row_sth->finish();
 
-               if ( $row && defined $row->[0] ) {
-                  MKDEBUG && _d('Row already exists in dest table');
-                  $insert_row = 0;
-               }
+            if ( $row && defined $row->[0] ) {
+               MKDEBUG && _d('Row already exists in dest table');
+               $insert_row = 0;
+               $stats->{duplicate_dest_row}++ if $stats;
             }
          }
 
@@ -4071,12 +4082,29 @@ sub _copy_rows_in_chunk {
                      @$dst_cols)
                   . "\n";
             }
-            if ( $execute ) {
-               $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
-               $stats->{rows_inserted}++ if $stats;
+            $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
+            $stats->{rows_inserted}++ if $stats;
+
+            if ( $self->{warnings_sth} ) {
+               MKDEBUG && _d($self->{warnings_sth}->{Statement});
+               if ( $print ) {
+                  print $self->{warnings_sth}->{Statement}, "\n";
+               }
+               $self->{warnings_sth}->execute();
+               $stats->{show_warnings}++ if $stats;
+               my $warnings = $self->{warnings_sth}->fetchall_arrayref();
+               if ( $warnings && @$warnings ) {
+                  foreach my $warning ( @$warnings ) {
+                     print STDERR "Warning after INSERT: ",
+                        join(' ', @$warning), "\n";
+                     $stats->{"warning_" . $warning->[1]}++ if $stats;
+                  }
+                  $self->dump_context();
+                  die "Dying because of the warnings above"
+                     if ($self->{warnings} || '') eq 'die';
+               }
             }
          }
-
 
          $last_row = $src_row;
       } # DEST_TABLE
@@ -4087,10 +4115,8 @@ sub _copy_rows_in_chunk {
       if ( $print ) {
          print $self->{commit_sth}->{Statement}, "\n";
       }
-      if ( $execute ) {
-         $self->{commit_sth}->execute();
-         $stats->{commit}++ if $stats;
-      }
+      $self->{commit_sth}->execute();
+      $stats->{commit}++ if $stats;
    }
 
    return $last_row;
@@ -4098,6 +4124,37 @@ sub _copy_rows_in_chunk {
 
 sub cleanup {
    my ( $self, %args ) = @_;
+   return;
+}
+
+sub dump_context {
+   my ($self) = @_;
+   local $Data::Dumper::Indent = 0;
+   
+   print STDERR "Error context:\n";
+   print STDERR "\tRow $self->{rowno}, chunk $self->{chunkno}, ",
+      "chunk row ", ($self->{context}->{chunk_rowno} || 0), "\n";
+   if ( my $sth = $self->{context}->{select_sth} ) {
+      print STDERR "\t", $sth->{Statement}, "\n";
+   }
+   if ( my $params = $self->{context}->{select_params} ) {
+      print STDERR "\tBind values: "
+         . join(', ', map { defined $_ ? $_ : 'NULL' } @$params) . "\n";
+   }
+   if ( my $src_row = $self->{context}->{src_row} ) {
+      print STDERR "\tSource row: ", Dumper($src_row), "\n";
+   }
+   if ( my $insert = $self->{context}->{insert} ) {
+      my $dst_cols = $insert->{cols};
+      print STDERR "\t", $insert->{sth}->{Statement}, "\n";
+      if ( my $dst_row = $self->{context}->{dst_row} ) {
+         print STDERR "\tBind values: "
+            . join(', ',
+               map { defined $dst_row->{$_} ? $dst_row->{$_} : 'NULL' }
+               @$dst_cols)
+            . "\n";
+      }
+   }
    return;
 }
 
@@ -4154,6 +4211,8 @@ sub main {
 
    my $src_dsn = $o->get('source');
    my $dst_dsn = $o->get('dest');
+
+   $o->set('statistics', 1) if $o->get('verify');
 
    if ( !$o->got('help') ) {
       foreach my $dsn ( qw(source dest) ) {
@@ -4376,23 +4435,68 @@ sub main {
       insert_ignore       => $o->get('insert-ignore'),
       asc_first           => $o->get('ascend-first') ? 1 : 0,
       auto_increment_gaps => $o->get('auto-increment-gaps'),
+      warnings            => $o->get('check-warnings') ? lc $o->get('warnings')
+                                                       : undef,
       foreign_keys        => 1,
       Quoter              => $q,
       TableNibbler        => new TableNibbler(%common_modules),
    );
 
    if ( $o->get('execute') ) {
-      $copy_rows->copy();
-      $copy_rows->cleanup();
+      my $n_source_rows;
+      if ( $o->get('verify') ) {
+         my $sql = "SELECT COUNT(*) "
+                 . "FROM ". $q->quote($src_dsn->{D}, $src_dsn->{t})
+                 . " /* --verify */";
+         MKDEBUG && _d($sql);
+         print "-- $sql\n" if $o->get('print');
+         ($n_source_rows) = $src->{dbh}->selectrow_array($sql);
+         print "-- $n_source_rows source table rows\n" if $o->get('print');
+      }
+
+      eval {
+         $copy_rows->copy();
+      };
+      if ( $EVAL_ERROR ) {
+         warn "Copying rows failed: $EVAL_ERROR";
+         print_warnings($src->{dbh}, 'Warning on --source: ');
+         print_warnings($dst->{dbh}, 'Warning on --dest: ');
+         $copy_rows->dump_context();
+         exit 1;
+      } 
 
       if ( $o->get('statistics') ) {
          print "-- Statistics\n";
-         my $fmt = "-- %-20s %d\n";
+         my $fmt = "--   %-20s %d\n";
          foreach my $metric ( sort keys %$stats ) {
             printf $fmt, $metric, ($stats->{$metric} || 0);
          }
       }
+
+      if ( $o->get('verify') ) {
+         die "Did not select all source table rows"
+            if ($stats->{rows_selected} || 0) < $n_source_rows;
+
+         die "Did not insert all source table rows"
+            if ($stats->{rows_inserted} || 0) < $n_source_rows;
+         
+         die "Number of START TRANSACTION and COMMIT are not equal"
+            if ($stats->{start_transaction} || 0) != ($stats->{commit} || 0);
+         
+         die "Less chunks than transactions"
+            if ($stats->{chunks} || 0) < ($stats->{commit} || 0);
+
+         print "-- All --verify tests pass\n";
+      }
+
+      if ( $o->get('check-warnings') && lc($o->get('warnings')) ne 'ignore' ) {
+         if (    print_warnings($src->{dbh}, 'Uncaught warning on --source: ')
+              || print_warnings($dst->{dbh}, 'Uncaught warning on --dest: ') ) {
+            die "The warnings above were not caught during the copy process";
+         }
+      }
    }
+
 
    return 0;
 }
@@ -4415,6 +4519,20 @@ sub get_cxn {
    $dbh->{InactiveDestroy}  = 1;
    $dbh->{FetchHashKeyName} = 'NAME_lc';
    return $dbh;
+}
+
+sub print_warnings {
+   my ($dbh, $prefix) = @_;
+   $prefix ||= '';
+   my $n_warnings = 0;
+   my $warnings = $dbh->selectall_arrayref('SHOW WARNINGS');
+   if ($warnings) {
+      foreach my $warning (@$warnings) {
+         print STDERR $prefix, join(' ', @$warning), "\n";
+         $n_warnings++;
+      }
+   }
+   return $n_warnings;
 }
 
 sub _d {
@@ -4693,6 +4811,12 @@ then inserting duplicate rows will cause gaps in auto increment column
 values.  Specifying this option causes the tool to check for the row in
 each L<"--dest"> table before inserting it.  If the row already exists,
 then it is not inserted.
+
+=item --[no]check-warnings
+
+default: yes
+
+C<SHOW WARNINGS> after each C<INSERT> and do L<"--warnings"> if warnings.
 
 =item --chunk-index
 
@@ -5022,9 +5146,23 @@ short form: -u; type: string
 
 User for login if not current user.
 
+=item --[no]verify
+
+default: yes
+
+Verify that all source rows were copied after L<"--execute"> finishes.
+This option enables L<"--statistics">.
+
 =item --version
 
 Show version and exit.
+
+=item --warnings
+
+type: string; default: die
+
+Take this action if L<"--[no]check-warnings"> has warnings.  Possible actions
+are: ignore, warn (to STDERR), and die.
 
 =back
 

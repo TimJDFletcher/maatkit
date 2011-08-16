@@ -71,7 +71,7 @@ is_deeply(
          '--source', "F=$cnf,D=test,t=raw_data",
          '--dest',   "t=data",
          '--constant-values', "$trunk/mk-insert-normalized/t/samples/raw-data-const-vals.txt",
-         qw(--databases test --print --execute --txn-size 1)) },
+         qw(--databases test --print --execute --txn-size 1 --no-verify)) },
 #      "$out/raw-data.txt",
 #      sed => [
 #         "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
@@ -166,7 +166,7 @@ is_deeply(
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=denorm_address",
    '--dest',   "t=address",
-   qw(--databases test --execute),
+   qw(--databases test --execute --no-verify),
    qw(--insert-ignore));  # required since denorm_address has dupes
 
 is_deeply(
@@ -277,7 +277,7 @@ is_deeply(
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=denorm_items",
    '--dest',   "t=items",
-   qw(--databases test --execute));
+   qw(--databases test --execute --no-verify));
 
 $rows = $dbh->selectall_arrayref('select * from types order by type_id');
 is_deeply(
@@ -331,7 +331,7 @@ $dbh->do('use test');
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=raw_data",
    '--dest',   "t=data",
-   qw(--databases test --insert-ignore --execute));
+   qw(--databases test --insert-ignore --execute --no-verify));
 
 $rows = $dbh->selectall_arrayref('select * from data_report order by id');
 is_deeply(
@@ -374,7 +374,7 @@ $dbh->do('use test');
 mk_insert_normalized::main(
    '--source', "F=$cnf,D=test,t=raw_data",
    '--dest',   "t=data",
-   qw(--databases test --insert-ignore --execute),
+   qw(--databases test --insert-ignore --execute --no-verify),
    qw(--no-auto-increment-gaps));
 
 $rows = $dbh->selectall_arrayref('select * from data_report order by id');
@@ -420,7 +420,7 @@ $dbh->do('use test');
          '--dest',   "t=z",
          qw(--ignore-columns id),
          '--column-map', "$trunk/mk-insert-normalized/t/samples/col-map.txt",
-         qw(--databases test --print --execute)) },
+         qw(--databases test --print --execute --no-verify)) },
 #      "$out/col-map-output.txt",
 #      sed => [
 #         "-e 's/pid:[0-9]*/pid:0/g' -i.bak",
@@ -467,7 +467,7 @@ output(
       '--dest',   "t=data",
       '--column-map', "$trunk/mk-insert-normalized/t/samples/map-name.txt",
       qw(--insert-ignore --no-auto-increment-gaps),
-      qw(--databases test --execute)) },
+      qw(--databases test --execute --no-verify)) },
 );
 
 $rows = $dbh->selectall_arrayref('select * from test.entity_1 order by id');
@@ -519,7 +519,7 @@ output(
       '--column-map', "$trunk/$in/two-fk-column-map.txt",
       '--foreign-key-column-map', "$trunk/$in/two-fk-fk-column-map.txt",
       qw(--insert-ignore --no-auto-increment-gaps),
-      qw(--databases test --execute)) },
+      qw(--databases test --execute --no-verify)) },
 );
 
 $rows = $dbh->selectall_arrayref('select * from test.account order by id');
