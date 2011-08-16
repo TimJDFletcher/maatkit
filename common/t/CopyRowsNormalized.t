@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 60;
+   plan tests => 64;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -1060,6 +1060,49 @@ is_deeply(
    $dbh->selectall_arrayref('select * from osc.__new_t order by id'),
    [ [qw(1 a)], [qw(2 b)], [qw(3 ab)], [qw(4 d)], [qw(5 e)] ],
    "Warn but copy row"
+);
+
+is(
+   $stats->{show_warnings},
+   5,
+   '5 SHOW WARNINGS'
+);
+
+# And again but ignore the warning.
+$sb->load_file("master", "common/t/samples/osc/tbl001.sql");
+$dbh->do('ALTER TABLE osc.__new_t DROP COLUMN `c`, ADD COLUMN `c` varchar(2)');
+$dbh->do('update osc.t set c="abcdef" where id=3');
+@ARGV = qw(-d osc);
+$o->get_opts();
+$copy_rows = make_copier(
+   src_db   => 'osc',
+   src_tbl  => 't',
+   dst_tbls => [['osc', '__new_t']],
+   txn_size => 2,
+   warnings => 'ignore',
+);
+
+$output = output(
+   sub { $copy_rows->copy() },
+   stderr => 1,
+);
+
+unlike(
+   $output,
+   qr/Warning after INSERT: Warning 1265 Data truncated for column/,
+   'Warning with warn'
+);
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from osc.__new_t order by id'),
+   [ [qw(1 a)], [qw(2 b)], [qw(3 ab)], [qw(4 d)], [qw(5 e)] ],
+   "No warning and rows copied"
+);
+
+is(
+   $stats->{show_warnings},
+   undef,
+   'No SHOW WARNINGS'
 );
 
 # #############################################################################
