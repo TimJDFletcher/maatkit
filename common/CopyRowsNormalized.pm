@@ -192,6 +192,7 @@ sub new {
       next_sth      => $next_sth,
       asc_cols      => $asc->{scols},  # src tbl columns used for nibbling
       chunkno       => 0,              # incr in _copy_rows_in_chunk()
+      rowno         => 0,
       start_txn_sth => $start_txn_sth,
       commit_sth    => $commit_sth,
       warnings_sth  => $warnings_sth,
@@ -286,6 +287,8 @@ sub _copy_rows_in_chunk {
    SOURCE_ROW:
    while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
       $self->{context}->{src_row} = $src_row;
+      $self->{context}->{chunk_rowno}++;
+      $self->{rowno}++;
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
@@ -400,7 +403,8 @@ sub dump_context {
    local $Data::Dumper::Indent = 0;
    
    print STDERR "Error context:\n";
-   print STDERR "\tChunk $self->{chunkno}\n";
+   print STDERR "\tRow $self->{rowno}, chunk $self->{chunkno}, ",
+      "chunk row ", ($self->{context}->{chunk_rowno} || 0), "\n";
    if ( my $sth = $self->{context}->{select_sth} ) {
       print STDERR "\t", $sth->{Statement}, "\n";
    }
