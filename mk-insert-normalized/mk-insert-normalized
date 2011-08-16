@@ -4207,8 +4207,6 @@ sub main {
    my $dp = $o->DSNParser();
    $dp->prop('set-vars', $o->get('set-vars'));
 
-   $o->usage_or_errors();
-
    my $src_dsn = $o->get('source');
    my $dst_dsn = $o->get('dest');
 
@@ -4222,7 +4220,15 @@ sub main {
             }
          }
       }
+
+      if ( my $w = $o->get('warnings') ) {
+         if (!grep {$w eq $_} qw(ignore warn die)) {
+            $o->save_error("Invalid --warnings: $w");
+         }
+      }
    }
+
+   $o->usage_or_errors();
 
    # ########################################################################
    # Make our modules.
