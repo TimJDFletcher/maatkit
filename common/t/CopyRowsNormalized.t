@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 57;
+   plan tests => 60;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -984,7 +984,7 @@ $sb->load_file("master", "common/t/samples/osc/tbl001.sql");
 
 # This z value will be truncated, causing a warning.
 $dbh->do('ALTER TABLE osc.__new_t DROP COLUMN `c`, ADD COLUMN `c` varchar(2)');
-$dbh->do('update osc.t set c="abcdef" where id=5');
+$dbh->do('update osc.t set c="abcdef" where id=3');
 
 @ARGV = qw(-d osc);
 $o->get_opts();
@@ -999,7 +999,7 @@ $copy_rows = make_copier(
 $rows = $dbh->selectall_arrayref('select * from osc.t order by id');
 is_deeply(
    $rows,
-   [ [qw(1 a)], [qw(2 b)], [qw(3 c)], [qw(4 d)], [qw(5 abcdef)] ],
+   [ [qw(1 a)], [qw(2 b)], [qw(3 abcdef)], [qw(4 d)], [qw(5 e)] ],
    'Source table has rows'
 );
 
@@ -1007,6 +1007,12 @@ is_deeply(
 $output = output(
    sub { $copy_rows->copy() },
    stderr => 1,
+);
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from osc.__new_t order by id'),
+   [ [qw(1 a)], [qw(2 b)], ], # [qw(3 ab)], [qw(4 d)], [qw(5 e)] ],
+   "Warn and partial copy"
 );
 
 like(
@@ -1019,6 +1025,41 @@ like(
    $output,
    qr/Dying because of the warnings above/,
    'Dies because of warnings'
+);
+
+# Again but don't die this time.
+$sb->load_file("master", "common/t/samples/osc/tbl001.sql");
+
+# This z value will be truncated, causing a warning.
+$dbh->do('ALTER TABLE osc.__new_t DROP COLUMN `c`, ADD COLUMN `c` varchar(2)');
+$dbh->do('update osc.t set c="abcdef" where id=3');
+
+@ARGV = qw(-d osc);
+$o->get_opts();
+$copy_rows = make_copier(
+   src_db   => 'osc',
+   src_tbl  => 't',
+   dst_tbls => [['osc', '__new_t']],
+   txn_size => 2,
+   warnings => 'warn',
+);
+
+# Copy all rows from osc.t --> osc.__new_t.
+$output = output(
+   sub { $copy_rows->copy() },
+   stderr => 1,
+);
+
+like(
+   $output,
+   qr/Warning after INSERT: Warning 1265 Data truncated for column/,
+   'Warning with warn'
+);
+
+is_deeply(
+   $dbh->selectall_arrayref('select * from osc.__new_t order by id'),
+   [ [qw(1 a)], [qw(2 b)], [qw(3 ab)], [qw(4 d)], [qw(5 e)] ],
+   "Warn but copy row"
 );
 
 # #############################################################################
