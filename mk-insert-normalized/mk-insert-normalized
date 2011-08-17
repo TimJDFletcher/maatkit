@@ -3797,7 +3797,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7599
+# CopyRowsNormalized package 7604
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -4099,9 +4099,12 @@ sub _copy_rows_in_chunk {
                         join(' ', @$warning), "\n";
                      $stats->{"warning_" . $warning->[1]}++ if $stats;
                   }
-                  $self->dump_context();
-                  die "Dying because of the warnings above"
-                     if ($self->{warnings} || '') eq 'die';
+                  if ( ($self->{warnings} || '') eq 'die' ) {
+                     die "Dying because of the warnings above"
+                  }
+                  else {
+                     $self->dump_context();
+                  }
                }
             }
          }
@@ -4214,6 +4217,7 @@ sub main {
 
    if ( !$o->got('help') ) {
       foreach my $dsn ( qw(source dest) ) {
+         next unless $o->got($dsn);
          foreach my $part ( qw(t D) ) {
             if ( !$o->get($dsn)->{$part} ) {
                $o->save_error("--$dsn DSN requires a '$part' part")
