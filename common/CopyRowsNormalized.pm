@@ -333,7 +333,7 @@ sub _copy_rows_in_chunk {
             if ( $row && defined $row->[0] ) {
                MKDEBUG && _d('Row already exists in dest table');
                $insert_row = 0;
-               $stats->{duplicate_dest_row}++ if $stats;
+               $stats->{duplicate_dest_rows}++ if $stats;
             }
          }
 
