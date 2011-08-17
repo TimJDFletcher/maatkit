@@ -368,9 +368,13 @@ sub _copy_rows_in_chunk {
                         join(' ', @$warning), "\n";
                      $stats->{"warning_" . $warning->[1]}++ if $stats;
                   }
-                  $self->dump_context();
-                  die "Dying because of the warnings above"
-                     if ($self->{warnings} || '') eq 'die';
+                  if ( ($self->{warnings} || '') eq 'die' ) {
+                     # caller should dump_context()
+                     die "Dying because of the warnings above"
+                  }
+                  else {
+                     $self->dump_context();
+                  }
                }
             }
          }
