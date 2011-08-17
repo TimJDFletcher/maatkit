@@ -3797,7 +3797,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7604
+# CopyRowsNormalized package 7606
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -4067,7 +4067,7 @@ sub _copy_rows_in_chunk {
             if ( $row && defined $row->[0] ) {
                MKDEBUG && _d('Row already exists in dest table');
                $insert_row = 0;
-               $stats->{duplicate_dest_row}++ if $stats;
+               $stats->{duplicate_dest_rows}++ if $stats;
             }
          }
 
