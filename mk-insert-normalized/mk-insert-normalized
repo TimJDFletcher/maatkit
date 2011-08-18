@@ -4488,7 +4488,8 @@ sub main {
             if ($stats->{rows_selected} || 0) < $n_source_rows;
 
          die "Did not insert all source table rows"
-            if ($stats->{rows_inserted} || 0) < $n_source_rows;
+            if ($stats->{rows_inserted} || 0)
+               + ($stats->{duplicate_dest_rows} || 0) < $n_source_rows;
          
          die "Number of START TRANSACTION and COMMIT are not equal"
             if ($stats->{start_transaction} || 0) != ($stats->{commit} || 0);
