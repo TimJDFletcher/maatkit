@@ -3797,7 +3797,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# CopyRowsNormalized package 7606
+# CopyRowsNormalized package 7611
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/CopyRowsNormalized.pm
@@ -3887,6 +3887,7 @@ sub new {
          my $sth    = $dst->{dbh}->prepare($sql);
          my $insert = {
             tbl          => $dst_tbl,
+            tbl_name     => join('.', @{$dst_tbl}{qw(db tbl)}),
             cols         => $cols,
             sth          => $sth,
             insert_group => $insert_group,
@@ -4019,7 +4020,8 @@ sub _copy_rows_in_chunk {
       $stats->{start_transaction}++ if $stats;
    }
 
-   my $inserts = $self->{inserts};
+   my $inserts   = $self->{inserts};
+   my $n_inserts = @$inserts - 1;
    my $last_row;
    SOURCE_ROW:
    while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
@@ -4029,7 +4031,8 @@ sub _copy_rows_in_chunk {
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
-      foreach my $insert ( @$inserts ) {
+      for my $i (0..$n_inserts) {
+         my $insert = $inserts->[$i];
          $self->{context}->{insert} = $insert;
 
          my $dst_tbl      = $insert->{tbl};
@@ -4067,7 +4070,10 @@ sub _copy_rows_in_chunk {
             if ( $row && defined $row->[0] ) {
                MKDEBUG && _d('Row already exists in dest table');
                $insert_row = 0;
-               $stats->{duplicate_dest_rows}++ if $stats;
+               if ( $stats ) {
+                  $stats->{duplicate_rows}++;
+                  $insert->{tbl}->{duplicate_rows}++;
+               }
             }
          }
 
@@ -4083,7 +4089,10 @@ sub _copy_rows_in_chunk {
                   . "\n";
             }
             $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
-            $stats->{rows_inserted}++ if $stats;
+            if ( $stats ) {
+               $stats->{rows_inserted}++;
+               $insert->{tbl}->{rows_inserted}++;
+            }
 
             if ( $self->{warnings_sth} ) {
                MKDEBUG && _d($self->{warnings_sth}->{Statement});
@@ -4477,9 +4486,20 @@ sub main {
 
       if ( $o->get('statistics') ) {
          print "-- Statistics\n";
-         my $fmt = "--   %-20s %d\n";
+         my $fmt = "--   %-30s %d\n";
          foreach my $metric ( sort keys %$stats ) {
             printf $fmt, $metric, ($stats->{$metric} || 0);
+         }
+
+         print "-- Rows inserted\n";
+         foreach my $dst_tbl ( @dst_tbls ) {
+            printf $fmt, join('.', @{$dst_tbl}{qw(db tbl)}),
+               $dst_tbl->{rows_inserted} || 0;
+         }
+         print "-- Duplicate rows\n";
+         foreach my $dst_tbl ( @dst_tbls ) {
+            printf $fmt, join('.', @{$dst_tbl}{qw(db tbl)}),
+               $dst_tbl->{duplicate_rows} || 0;
          }
       }
 
@@ -4487,9 +4507,13 @@ sub main {
          die "Did not select all source table rows"
             if ($stats->{rows_selected} || 0) < $n_source_rows;
 
-         die "Did not insert all source table rows"
+         die "Number of inserted and duplicate rows for all dest tables is less than number of source table rows"
             if ($stats->{rows_inserted} || 0)
-               + ($stats->{duplicate_dest_rows} || 0) < $n_source_rows;
+             + ($stats->{duplicate_dest_rows} || 0) < $n_source_rows;
+
+         die "Did not insert all source rows into the --dest table"
+            if ($dst_tbls[-1]->{rows_inserted} || 0)
+             + ($dst_tbls[-1]->{duplicate_rows} || 0) < $n_source_rows;
          
          die "Number of START TRANSACTION and COMMIT are not equal"
             if ($stats->{start_transaction} || 0) != ($stats->{commit} || 0);
