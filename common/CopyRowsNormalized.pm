@@ -282,7 +282,8 @@ sub _copy_rows_in_chunk {
    }
 
    # Fetch and INSERT rows into destination tables.
-   my $inserts = $self->{inserts};
+   my $inserts   = $self->{inserts};
+   my $n_inserts = @$inserts - 1;
    my $last_row;
    SOURCE_ROW:
    while ( $sth->{Active} && defined(my $src_row = $sth->fetchrow_hashref()) ) {
@@ -292,7 +293,8 @@ sub _copy_rows_in_chunk {
       $stats->{rows_selected}++ if $stats;
 
       DEST_TABLE:
-      foreach my $insert ( @$inserts ) {
+      for my $i (0..$n_inserts) {
+         my $insert = $inserts->[$i];
          $self->{context}->{insert} = $insert;
 
          my $dst_tbl      = $insert->{tbl};
@@ -333,7 +335,10 @@ sub _copy_rows_in_chunk {
             if ( $row && defined $row->[0] ) {
                MKDEBUG && _d('Row already exists in dest table');
                $insert_row = 0;
-               $stats->{duplicate_dest_rows}++ if $stats;
+               if ( $stats ) {
+                  $stats->{duplicate_rows}++;
+                  $stats->{dest_duplicate_rows}++ if $i == $n_inserts;
+               }
             }
          }
 
@@ -352,7 +357,10 @@ sub _copy_rows_in_chunk {
                   . "\n";
             }
             $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
-            $stats->{rows_inserted}++ if $stats;
+            if ( $stats ) {
+               $stats->{rows_inserted}++;
+               $stats->{dest_rows_inserted}++ if $i == $n_inserts;
+            }
 
             if ( $self->{warnings_sth} ) {
                MKDEBUG && _d($self->{warnings_sth}->{Statement});
