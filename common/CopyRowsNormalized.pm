@@ -338,7 +338,7 @@ sub _copy_rows_in_chunk {
                $insert_row = 0;
                if ( $stats ) {
                   $stats->{duplicate_rows}++;
-                  $insert->{duplicate_rows}++;
+                  $insert->{tbl}->{duplicate_rows}++;
                }
             }
          }
