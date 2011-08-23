@@ -39,7 +39,7 @@ if ( !$src_dbh ) {
    plan skip_all => 'Cannot connect to MySQL';
 }
 else {
-   plan tests => 65;
+   plan tests => 64;
 }
 
 my $dbh    = $src_dbh;  # src, dst, doesn't matter for checking the tables
@@ -976,12 +976,6 @@ is_deeply(
    ],
    'data rows (two inserts)'
 ) or print Dumper($rows);
-
-is(
-   $stats->{dest_rows_inserted},
-   6,
-   "dest_rows_inserted"
-);
 
 # ###########################################################################
 # Break a copy to create and catch a warning.

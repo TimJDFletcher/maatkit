@@ -142,6 +142,7 @@ sub new {
          my $sth    = $dst->{dbh}->prepare($sql);
          my $insert = {
             tbl          => $dst_tbl,
+            tbl_name     => join('.', @{$dst_tbl}{qw(db tbl)}),
             cols         => $cols,
             sth          => $sth,
             insert_group => $insert_group,
@@ -337,7 +338,7 @@ sub _copy_rows_in_chunk {
                $insert_row = 0;
                if ( $stats ) {
                   $stats->{duplicate_rows}++;
-                  $stats->{dest_duplicate_rows}++ if $i == $n_inserts;
+                  $insert->{duplicate_rows}++;
                }
             }
          }
@@ -359,7 +360,7 @@ sub _copy_rows_in_chunk {
             $insert->{sth}->execute(@{$dst_row}{@$dst_cols});
             if ( $stats ) {
                $stats->{rows_inserted}++;
-               $stats->{dest_rows_inserted}++ if $i == $n_inserts;
+               $insert->{tbl}->{rows_inserted}++;
             }
 
             if ( $self->{warnings_sth} ) {
