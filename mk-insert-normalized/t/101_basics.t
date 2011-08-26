@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 33;
+   plan tests => 35;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -558,6 +558,51 @@ is_deeply(
       [2, 6, 15],
    ],
    'data rows (two inserts)'
+);
+
+# ############################################################################
+# Don't iter fk table that's ignored.
+# ############################################################################
+$sb->load_file("master", "$in/animals.sql");
+$dbh->do('use test');
+
+ok(
+   no_diff(
+      sub { mk_insert_normalized::main(
+         '--source', "F=$cnf,D=test,t=raw_data_animal_1",
+         '--dest',   "t=animal",
+         qw(--insert-ignore --no-auto-increment-gaps),
+         qw(--databases test),
+         '--tables', 'raw_data_animal_1,animal,report_animal',
+         qw(--print));
+      },
+      "$out/animals-print.txt",
+      sed => ["-i.bak -e 's/pid:[0-9]*/pid:0/g' -e 's/user:.* /user:none /g'"],
+   ),
+   "animals insert plan"
+);
+
+output(
+   sub { mk_insert_normalized::main(
+      '--source', "F=$cnf,D=test,t=raw_data_animal_1",
+      '--dest',   "t=animal",
+      qw(--insert-ignore --no-auto-increment-gaps),
+      qw(--databases test),
+      '--tables', 'raw_data_animal_1,animal,report_animal',
+      qw(--execute))
+   },
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.animal order by report_animal');
+is_deeply(
+   $rows,
+   [
+      [1,'cat',15,undef],
+      [1,'dog',45,undef],
+      [2,'bird',5,undef],
+      [2,'frog',2,undef],
+   ],
+   'animal rows'
 );
 
 # #############################################################################

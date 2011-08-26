@@ -3227,7 +3227,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ForeignKeyIterator package 7552
+# ForeignKeyIterator package 7613
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ForeignKeyIterator.pm
@@ -3328,7 +3328,7 @@ sub _get_fk_refs {
    }
 
    return $self->_recurse_fk_references(
-      $self->{Schema}->get_schema(),
+      $self->{Schema},
       $self->{db},
       $self->{tbl},
    );
@@ -3345,16 +3345,23 @@ sub _recurse_fk_references {
    MKDEBUG && _d('Recursing from', $db, $tbl);
 
    my @fk_refs;
-   if ( $schema->{$db}->{$tbl}->{references} ) {
-      foreach my $refed_obj ( @{$schema->{$db}->{$tbl}->{references}} ) {
-         MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
-         push @fk_refs,
-            $self->_recurse_fk_references($schema, @$refed_obj, $seen);
+   my $fk_tbl = $schema->get_table($db, $tbl);
+   if ( $fk_tbl->{references} ) {
+      foreach my $refed_obj ( @{$fk_tbl->{references}} ) {
+         if ( $schema->get_table(@$refed_obj) ) {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
+            push @fk_refs,
+               $self->_recurse_fk_references($schema, @$refed_obj, $seen);
+         }
+         else {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj,
+               'but that table was filtered out');
+         }
       }
    }
 
    MKDEBUG && _d('No more tables referenced by', $db, $tbl);
-   push @fk_refs, $schema->{$db}->{$tbl};
+   push @fk_refs, $fk_tbl;
 
    return @fk_refs;
 }
@@ -3375,7 +3382,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7591
+# ColumnMap package 7614
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3461,12 +3468,14 @@ sub new {
                fk      => $fk,
                groupno => $groupno,
             );
-            MKDEBUG && _d($dst_col, 'gets values from insert group', $groupno);
-            push @{$insert_plan[0]->{columns}}, [
-               $dst_col,
-               SELECTED_ROW,
-               $select_row_params,
-            ];
+            if ( $select_row_params ) {
+               MKDEBUG && _d($dst_col,'gets values from insert group',$groupno);
+               push @{$insert_plan[0]->{columns}}, [
+                  $dst_col,
+                  SELECTED_ROW,
+                  $select_row_params,
+               ];
+            }
 
             next DST_COL;
          }
@@ -3574,6 +3583,11 @@ sub _map_fk {
       $fk->{parent_tbl}->{db} = $tbl->{db};
    }
    my $parent_tbl = $schema->get_table(@{$fk->{parent_tbl}}{qw(db tbl)}); 
+   if ( !$parent_tbl ) {
+      MKDEBUG && _d('Parent table', @{$fk->{parent_tbl}}{qw(db tbl)},
+         'was filtered out');
+      return;
+   }
 
    my @fk_cols     = @{$fk->{cols}};
    my @parent_cols = @{$fk->{parent_cols}};
