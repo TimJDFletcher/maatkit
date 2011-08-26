@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 12;
+use Test::More tests => 13;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -41,6 +41,9 @@ my $column_map;
 
 sub make_column_map {
    my ( %args ) = @_;
+
+   @ARGV = $args{filters} ? @{$args{filters}} : ();
+   $o->get_opts();
 
    my $fi       = new FileIterator();
    my $file_itr = $fi->get_file_itr(@{$args{files}});
@@ -405,6 +408,53 @@ is_deeply(
       }
    ],
    'Insert plan for data'
+) or print Dumper($plan);
+
+
+# ############################################################################
+# Don't map to nonexistent table.
+# ############################################################################
+make_column_map(
+   files           => ["$trunk/mk-insert-normalized/t/samples/animals.sql"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data_animal_1',
+   dst_db          => 'test',
+   dst_tbl         => 'animal',
+   foreign_keys    => 1,
+   filters         => ['--databases', 'test',
+                       '--tables',    'raw_data_animal_1,animal,report_animal'],
+   column_map      => [
+      { src_col  => 'acquired',
+        dst_col  => { db=>'test', tbl=>'report_animal', col=>'acquired' },
+      },
+      { src_col => 'name',
+        dst_col => { db=>'test', tbl=>'animal', col=>'name' },
+      },
+      { src_col => 'max_weight',
+        dst_col => { db=>'test', tbl=>'animal', col=>'max_weight' },
+      },
+   ],
+);
+
+my $animal_tbl = $schema->get_table('test', 'animal');
+my $report_animal_tbl = $schema->get_table('test', 'report_animal');
+$plan = $column_map->insert_plan($animal_tbl);
+is_deeply(
+   $plan,
+   [ {
+      columns => [
+         [ 'report_animal', ColumnMap::SELECTED_ROW, 
+            { tbl   => $report_animal_tbl,
+              cols  => { id => 'report_animal' },
+              where => \$report_animal_tbl->{last_inserted_row}->[0],
+            },
+         ],
+         [ 'name', ColumnMap::COLUMN, 'name' ],
+         [ 'max_weight', ColumnMap::COLUMN, 'max_weight' ]
+      ],
+      group_number => 0
+   } ],
+   'Insert plan for animals'
 ) or print Dumper($plan);
 
 # #############################################################################

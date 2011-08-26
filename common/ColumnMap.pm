@@ -129,12 +129,14 @@ sub new {
                fk      => $fk,
                groupno => $groupno,
             );
-            MKDEBUG && _d($dst_col, 'gets values from insert group', $groupno);
-            push @{$insert_plan[0]->{columns}}, [
-               $dst_col,
-               SELECTED_ROW,
-               $select_row_params,
-            ];
+            if ( $select_row_params ) {
+               MKDEBUG && _d($dst_col,'gets values from insert group',$groupno);
+               push @{$insert_plan[0]->{columns}}, [
+                  $dst_col,
+                  SELECTED_ROW,
+                  $select_row_params,
+               ];
+            }
 
             next DST_COL;
          }
@@ -250,6 +252,11 @@ sub _map_fk {
       $fk->{parent_tbl}->{db} = $tbl->{db};
    }
    my $parent_tbl = $schema->get_table(@{$fk->{parent_tbl}}{qw(db tbl)}); 
+   if ( !$parent_tbl ) {
+      MKDEBUG && _d('Parent table', @{$fk->{parent_tbl}}{qw(db tbl)},
+         'was filtered out');
+      return;
+   }
 
    my @fk_cols     = @{$fk->{cols}};
    my @parent_cols = @{$fk->{parent_cols}};
