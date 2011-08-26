@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 7;
+use Test::More tests => 8;
 
 use Schema;
 use SchemaIterator;
@@ -249,6 +249,28 @@ is(
    $fki2,
    'Reset and reused ForeignKeyIterator'
 );
+
+# ############################################################################
+# Filter a fk table.
+# ############################################################################
+test_fki(
+   test_name => 'Filter a fk table (animals.sql)',
+   files     => ["$trunk/mk-insert-normalized/t/samples/animals.sql"],
+   db        => 'test',
+   tbl       => 'animal',
+   filters   => ['--databases', 'test',
+                 '--tables',    'raw_data_animal_1,animal,report_animal'],
+   reverse   => 1,
+   result    => [
+      {  db  => 'test',
+         tbl => 'report_animal',
+      },
+      {  db  => 'test',
+         tbl => 'animal',
+      },
+   ],
+);
+
 
 # #############################################################################
 # Done.

@@ -166,7 +166,7 @@ sub _get_fk_refs {
    # Now we can recurse through the foreign key references, starting with
    # the target db.tbl.
    return $self->_recurse_fk_references(
-      $self->{Schema}->get_schema(),
+      $self->{Schema},
       $self->{db},
       $self->{tbl},
    );
@@ -183,16 +183,23 @@ sub _recurse_fk_references {
    MKDEBUG && _d('Recursing from', $db, $tbl);
 
    my @fk_refs;
-   if ( $schema->{$db}->{$tbl}->{references} ) {
-      foreach my $refed_obj ( @{$schema->{$db}->{$tbl}->{references}} ) {
-         MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
-         push @fk_refs,
-            $self->_recurse_fk_references($schema, @$refed_obj, $seen);
+   my $fk_tbl = $schema->get_table($db, $tbl);
+   if ( $fk_tbl->{references} ) {
+      foreach my $refed_obj ( @{$fk_tbl->{references}} ) {
+         if ( $schema->get_table(@$refed_obj) ) {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj);
+            push @fk_refs,
+               $self->_recurse_fk_references($schema, @$refed_obj, $seen);
+         }
+         else {
+            MKDEBUG && _d($db, $tbl, 'references', @$refed_obj,
+               'but that table was filtered out');
+         }
       }
    }
 
    MKDEBUG && _d('No more tables referenced by', $db, $tbl);
-   push @fk_refs, $schema->{$db}->{$tbl};
+   push @fk_refs, $fk_tbl;
 
    return @fk_refs;
 }
