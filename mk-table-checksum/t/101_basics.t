@@ -24,7 +24,7 @@ if ( !$master_dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 13;
+   plan tests => 14;
 }
 
 my ($output, $output2);
@@ -132,9 +132,27 @@ ok(
          qw(--no-zero-chunk --chunk-size 5), '--where', "date = '2011-03-03'");
       },
       "mk-table-checksum/t/samples/where01.out",
-      trf => "awk '{print \$1 \" \" \$2 \" \" \$3}'",
+      trf => "awk '{print \$1 \" \" \$2 \" \" \$3 \" \" \$6}'",
    ),
    "--where affects range stats (issue 1266)",
+);
+
+# Test it again with a varchar primary key.  The resulting 5 rows are:
+# | Apple     | 2011-03-03 |
+# | lemon     | 2011-03-03 |
+# | lime      | 2011-03-03 |
+# | pineapple | 2011-03-03 |
+# | raspberry | 2011-03-03 |
+$sb->load_file('master', "mk-table-checksum/t/samples/where02.sql");
+ok(
+   no_diff(
+      sub { mk_table_checksum::main(@args, 
+         qw(--no-zero-chunk --chunk-size 5), '--where', "date = '2011-03-03'");
+      },
+      "mk-table-checksum/t/samples/where02.out",
+      trf => "awk '{print \$1 \" \" \$2 \" \" \$3 \" \" \$6}'",
+   ),
+   "--where affects char range stats (bug 821673)"
 );
 
 # #############################################################################
