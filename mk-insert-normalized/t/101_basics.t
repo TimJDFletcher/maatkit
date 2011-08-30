@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 35;
+   plan tests => 38;
 }
 
 my $in  = "mk-insert-normalized/t/samples/";
@@ -603,6 +603,56 @@ is_deeply(
       [2,'frog',2,undef],
    ],
    'animal rows'
+);
+
+# ############################################################################
+# baseball
+# ############################################################################
+$sb->load_file("master", "$in/baseball.sql");
+$dbh->do('use test');
+
+output(
+   sub { mk_insert_normalized::main(
+      '--source', "F=$cnf,D=test,t=raw_data_baseball",
+      '--dest',   "t=baseball_team",
+      qw(--insert-ignore --no-auto-increment-gaps),
+      qw(--databases test --column-map), "$trunk/$in/baseball.map",
+      '--tables', 'raw_data_baseball,report_baseball_team,baseball_team',
+      qw(--execute));
+   },
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.location order by id');
+is_deeply(
+   $rows,
+   [
+      [1, 'New York City',  'New York'  ],
+      [2, 'Atlanta',        'Georgia'   ],
+      [3, 'San Francisco',  'California'],
+   ],
+   'location rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.report_baseball_team order by id');
+is_deeply(
+   $rows,
+   [
+      [1, '2011-08-01 10:00:00'],
+      [2, '2011-08-01 11:00:00'],
+   ],
+   'report_baseball_team rows'
+);
+
+$rows = $dbh->selectall_arrayref('select * from test.baseball_team order by name');
+is_deeply(
+   $rows,
+   [
+      [1, 'braves',  45, 48, 2],
+      [2, 'giants',  49, 42, 3],
+      [1, 'mets',    50, 43, 1],
+      [2, 'yankees', 44, 49, 1],
+   ],
+   'baseball_team rows'
 );
 
 # #############################################################################
