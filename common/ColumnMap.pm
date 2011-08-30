@@ -106,6 +106,44 @@ sub new {
             MKDEBUG && _d($dst_col, 'is ignored');
             next DST_COL;
          }
+         
+         if ( $constant_values && defined $constant_values->{$dst_col} ) {
+            MKDEBUG && _d($dst_col, 'gets values from contant value');
+            push @{$insert_plan[0]->{columns}}, [
+               $dst_col,
+               CONSTANT,
+               $constant_values->{$dst_col},
+            ];
+            $src_tbl->{mapped_columns}->{$dst_col}++;
+            next DST_COL;
+         } # const map
+
+         if ( $column_map ) {
+            my $mapped_cols = 0;
+            foreach my $map (
+               grep {
+                     $dst_tbl->{db}  eq $_->{dst_col}->{db}
+                  && $dst_tbl->{tbl} eq $_->{dst_col}->{tbl}
+                  && $dst_col        eq $_->{dst_col}->{col}
+               } @$column_map ) {
+               my $groupno = ($map->{group_number} || 1) - 1;
+               MKDEBUG && _d($dst_col, 'gets values from mapped column',
+                  $map->{src_col}, 'for insert group', $groupno);
+               push @{$insert_plan[$groupno]->{columns}}, [
+                  $dst_col,
+                  COLUMN,
+                  $map->{src_col},
+               ];
+               $src_tbl->{mapped_columns}->{$map->{src_col}}++;
+               if ( $map->{map_once} ) {
+                  $map_once{$dst_col} = 1;
+               }
+               else {
+                  $mapped_cols++;
+               }
+            }
+            next DST_COL if $mapped_cols;
+         } # manual col map
 
          if ( my $fk = $fk_col{$dst_col} ) {
             MKDEBUG && _d($dst_col, 'is a foreign key column');
@@ -139,45 +177,7 @@ sub new {
             }
 
             next DST_COL;
-         }
-
-         if ( $column_map ) {
-            my $mapped_cols = 0;
-            foreach my $map (
-               grep {
-                     $dst_tbl->{db}  eq $_->{dst_col}->{db}
-                  && $dst_tbl->{tbl} eq $_->{dst_col}->{tbl}
-                  && $dst_col        eq $_->{dst_col}->{col}
-               } @$column_map ) {
-               my $groupno = ($map->{group_number} || 1) - 1;
-               MKDEBUG && _d($dst_col, 'gets values from mapped column',
-                  $map->{src_col}, 'for insert group', $groupno);
-               push @{$insert_plan[$groupno]->{columns}}, [
-                  $dst_col,
-                  COLUMN,
-                  $map->{src_col},
-               ];
-               $src_tbl->{mapped_columns}->{$map->{src_col}}++;
-               if ( $map->{map_once} ) {
-                  $map_once{$dst_col} = 1;
-               }
-               else {
-                  $mapped_cols++;
-               }
-            }
-            next DST_COL if $mapped_cols;
-         }
-
-         if ( $constant_values && defined $constant_values->{$dst_col} ) {
-            MKDEBUG && _d($dst_col, 'gets values from contant value');
-            push @{$insert_plan[0]->{columns}}, [
-               $dst_col,
-               CONSTANT,
-               $constant_values->{$dst_col},
-            ];
-            $src_tbl->{mapped_columns}->{$dst_col}++;
-            next DST_COL;
-         }
+         } # fk map
 
          if ( $src_tbl->{tbl_struct}->{is_col}->{$dst_col} ) {
             if ( $map_once{$dst_col} ) {
@@ -203,7 +203,7 @@ sub new {
             ];
             $src_tbl->{mapped_columns}->{$dst_col}++;
             next DST_COL;
-         }
+         } # auto col map
 
          MKDEBUG && _d($dst_col, 'is not mapped');
       } # DST_COL
