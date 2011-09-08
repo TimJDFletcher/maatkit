@@ -3382,7 +3382,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# ColumnMap package 7622
+# ColumnMap package 7624
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/ColumnMap.pm
@@ -3513,9 +3513,10 @@ sub new {
                   SELECTED_ROW,
                   $select_row_params,
                ];
+               next DST_COL;
             }
 
-            next DST_COL;
+            MKDEBUG && _d('Foreign key column did not map');
          } # fk map
 
          if ( $src_tbl->{tbl_struct}->{is_col}->{$dst_col} ) {
