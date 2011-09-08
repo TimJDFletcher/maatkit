@@ -174,9 +174,12 @@ sub new {
                   SELECTED_ROW,
                   $select_row_params,
                ];
+               next DST_COL;
             }
 
-            next DST_COL;
+            # If the fk col doesn't map, then try other methods, i.e. normal
+            # auto-col mapping by name (the next if block). 
+            MKDEBUG && _d('Foreign key column did not map');
          } # fk map
 
          if ( $src_tbl->{tbl_struct}->{is_col}->{$dst_col} ) {

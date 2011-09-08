@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 13;
+use Test::More tests => 15;
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -455,6 +455,83 @@ is_deeply(
       group_number => 0
    } ],
    'Insert plan for animals'
+) or print Dumper($plan);
+
+# ############################################################################
+# baseball
+# ############################################################################
+make_column_map(
+   files           => ["$trunk/mk-insert-normalized/t/samples/baseball.sql"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data_baseball',
+   dst_db          => 'test',
+   dst_tbl         => 'baseball_team',
+   foreign_keys    => 1,
+   filters         => ['--databases', 'test',
+                       '--tables',    'raw_data_baseball,report_baseball_team,baseball_team'],
+   column_map      => [
+      { src_col  => 'town',
+        dst_col  => { db=>'test', tbl=>'baseball_team', col=>'location' },
+      },
+   ],
+);
+
+my $baseball_team_tbl = $schema->get_table('test', 'baseball_team');
+my $report_baseball_team_tbl = $schema->get_table('test', 'report_baseball_team');
+$plan = $column_map->insert_plan($baseball_team_tbl);
+is_deeply(
+   $plan,
+   [ {
+      columns => [
+         [ 'report_baseball_team', ColumnMap::SELECTED_ROW, 
+            { tbl   => $report_baseball_team_tbl,
+              cols  => { id => 'report_baseball_team' },
+              where => \$report_baseball_team_tbl->{last_inserted_row}->[0],
+            },
+         ],
+         [ 'name',     ColumnMap::COLUMN, 'name'   ],
+         [ 'wins',     ColumnMap::COLUMN, 'wins'   ],
+         [ 'losses',   ColumnMap::COLUMN, 'losses' ],
+         [ 'location', ColumnMap::COLUMN, 'town'   ],
+      ],
+      group_number => 0
+   } ],
+   'Insert plan for baseball'
+) or print Dumper($plan);
+
+# baseball2 -- no map required
+
+make_column_map(
+   files           => ["$trunk/mk-insert-normalized/t/samples/baseball2.sql"],
+   src_db          => 'test',
+   src_tbl         => 'raw_data_baseball',
+   dst_db          => 'test',
+   dst_tbl         => 'baseball_team',
+   foreign_keys    => 1,
+   filters         => ['--databases', 'test', '--tables', 'raw_data_baseball,report_baseball_team,baseball_team'],
+);
+
+$baseball_team_tbl = $schema->get_table('test', 'baseball_team');
+$report_baseball_team_tbl = $schema->get_table('test', 'report_baseball_team');
+$plan = $column_map->insert_plan($baseball_team_tbl);
+is_deeply(
+   $plan,
+   [ {
+      columns => [
+         [ 'report_baseball_team', ColumnMap::SELECTED_ROW, 
+            { tbl   => $report_baseball_team_tbl,
+              cols  => { id => 'report_baseball_team' },
+              where => \$report_baseball_team_tbl->{last_inserted_row}->[0],
+            },
+         ],
+         [ 'name',     ColumnMap::COLUMN, 'name'     ],
+         [ 'wins',     ColumnMap::COLUMN, 'wins'     ],
+         [ 'losses',   ColumnMap::COLUMN, 'losses'   ],
+         [ 'location', ColumnMap::COLUMN, 'location' ],
+      ],
+      group_number => 0
+   } ],
+   'Insert plan for baseball2'
 ) or print Dumper($plan);
 
 # #############################################################################
