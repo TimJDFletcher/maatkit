@@ -4490,6 +4490,102 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
+# DrizzleQueryLogParser package 7627
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the SVN repository at,
+#   trunk/common/DrizzleQueryLogParser.pm
+#   trunk/common/t/DrizzleQueryLogParser.t
+# See http://code.google.com/p/maatkit/wiki/Developers for more information.
+# ###########################################################################
+package DrizzleQueryLogParser;
+
+use strict;
+use warnings FATAL => 'all';
+use English qw(-no_match_vars);
+
+use constant MKDEBUG => $ENV{MKDEBUG} || 0;
+
+use Data::Dumper;
+
+my $val_pat = qr/(?>(?:"[^"]+"|\S+))/;
+
+sub new {
+   my ( $class ) = @_;
+   my $self = {};
+   return bless $self, $class;
+}
+
+sub parse_event {
+   my ( $self, %args ) = @_;
+   my @required_args = qw(next_event tell);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   }
+   my ($next_event, $tell) = @args{@required_args};
+
+   local $INPUT_RECORD_SEPARATOR = "\n#\n";
+   my $pos_in_log = $tell->();
+   my $stmt;
+
+   EVENT:
+   while ( defined($stmt = $next_event->()) ) {
+      my @properties = ('cmd', 'Query', 'pos_in_log', $pos_in_log);
+      $pos_in_log = $tell->();
+
+      chomp $stmt;  # remove input record separator after query
+
+      my @props;
+      COMMENT_LINE:
+      while ($stmt =~ m/^# /gcm) {
+         ATTRIB_VALUE:
+         while (my @prop = $stmt =~ m/\G([a-z_]+)=($val_pat)(?:\s|\Z)/gc) {
+            $prop[0] = $prop[0] eq 'start_ts'       ? 'ts'
+                     : $prop[0] eq 'execution_time' ? 'Query_time'
+                     : $prop[0];
+            my $i = 1;
+            while ($prop[$i]) {
+               if ( $prop[$i] =~ m/^"/ ) { # double-quoted string values
+                  $prop[$i] =~ s/^"//;
+                  $prop[$i] =~ s/"$//;
+               }
+               elsif ( $prop[$i] eq 'true' || $prop[$i] eq 'false' ) { # bools
+                  $prop[$i] = $prop[$i] eq 'true' ? 'Yes' : 'No';
+               }
+               $i += 2;  # values are every other array element
+            }
+            push @props, @prop;
+         }
+      }
+      push @props, 'arg', substr($stmt, pos $stmt);
+
+      MKDEBUG && _d('Properties of event:', Dumper(\@props));
+      my $event = { @props };
+      if ( $args{stats} ) {
+         $args{stats}->{events_read}++;
+         $args{stats}->{events_parsed}++;
+      }
+      return $event;
+   } # EVENT
+
+   $args{oktorun}->(0) if $args{oktorun};
+   return;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+1;
+
+# ###########################################################################
+# End DrizzleQueryLogParser package
+# ###########################################################################
+
+# ###########################################################################
 # SlowLogParser package 7522
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
@@ -12420,14 +12516,15 @@ sub main {
       }  # get events from processlist
       else {
          my %alias_for = (
-            slowlog   => ['SlowLogParser'],
-            binlog    => ['BinaryLogParser'],
-            genlog    => ['GeneralLogParser'],
-            tcpdump   => ['TcpdumpParser','MySQLProtocolParser'],
-            memcached => ['TcpdumpParser','MemcachedProtocolParser',
-                          'MemcachedEvent'],
-            http      => ['TcpdumpParser','HTTPProtocolParser'],
-            pglog     => ['PgLogParser'],
+            slowlog    => ['SlowLogParser'],
+            binlog     => ['BinaryLogParser'],
+            genlog     => ['GeneralLogParser'],
+            tcpdump    => ['TcpdumpParser','MySQLProtocolParser'],
+            memcached  => ['TcpdumpParser','MemcachedProtocolParser',
+                           'MemcachedEvent'],
+            http       => ['TcpdumpParser','HTTPProtocolParser'],
+            pglog      => ['PgLogParser'],
+            drizzlelog => ['DrizzleQueryLogParser'],
          );
          my $type = $o->get('type');
          $type    = $alias_for{$type->[0]} if $alias_for{$type->[0]};
@@ -15567,6 +15664,10 @@ The type of input to parse (default slowlog).  The permitted types are
 =item binlog
 
 Parse a binary log file.
+
+=item drizzlelog
+
+Parse a Drizzle query log created by the query_log plugin.
 
 =item genlog
 

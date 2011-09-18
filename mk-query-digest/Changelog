@@ -1,6 +1,7 @@
 Changelog for mk-query-digest:
 
    * Added --[no]check-privileges.
+   * Added --type drizzlelog for parsing Drizzle query logs.
 
 2011-06-08: version 0.9.29
 
