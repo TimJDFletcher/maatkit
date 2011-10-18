@@ -3723,6 +3723,7 @@ sub main {
                OptionParser => $o,
                DSNParser    => $dp,
                Quoter       => $q,
+               TableParser  => $tp,
             );
          });
       }

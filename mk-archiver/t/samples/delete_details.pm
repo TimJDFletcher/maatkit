@@ -64,35 +64,83 @@ my $other_col = 'id';
 # ###########################################################################
 sub new {
    my ( $class, %args ) = @_;
-   my $o = $args{OptionParser};
-   my $q = $args{Quoter};
+   my $o  = $args{OptionParser};
+   my $q  = $args{Quoter};
+   my $dp = $args{DSNParser};
+   my $tp = $args{TableParser};
+   
+   $other_col = $q->quote($other_col);
 
-   $other_db ||= $args{db};
-   $other_tbl  = $q->quote($other_db, $other_tbl);
-   $other_col  = $q->quote($other_col);
-   MKDEBUG && _d('Other table:', $other_tbl);
+   my $del_sql
+      = "DELETE FROM " . $q->quote(($other_db || $args{db}), $other_tbl)
+      . " WHERE " . join(' OR ', map {"$other_col=?"} (0..$#main_tbl_cols));
+   MKDEBUG && _d($del_sql);
+   my $del_sth = $args{dbh}->prepare($del_sql);
 
-# If the multi-row delete (with several "OR") is too slow, perhaps
-# this commented-out single-row delete would be faster.
-#   my $sql = "DELETE FROM $other_tbl WHERE $other_col = ?";
-   my $sql = "DELETE FROM $other_tbl WHERE "
-           . join(' OR ', map {"$other_col=?"} (0..$#main_tbl_cols));
-   MKDEBUG && _d($sql);
-   my $sth = $args{dbh}->prepare($sql);
+   my $before_delete;
+   if ( my $dest_dsn = $o->get('dest') ) {
+      $other_db ||= $dest_dsn->{D};
+
+      my $dest_dbh = $dp->get_dbh(
+         $dp->get_cxn_params($dest_dsn), { AutoCommit => 1 });
+
+      my $sql        = "SHOW CREATE TABLE " . $q->quote($other_db, $other_tbl);
+      my $row        = $args{dbh}->selectrow_arrayref($sql);
+      my $tbl_struct = $tp->parse($row->[1]);
+      my $cols       = $tbl_struct->{cols};
+
+      my $sel_sql
+         = "SELECT " . join(', ', map { $q->quote($_) } @$cols)
+         . " FROM " . $q->quote($args{db}, $other_tbl)
+         . " WHERE " . join(' OR ', map {"$other_col=?"} (0..$#main_tbl_cols));
+      MKDEBUG && _d($sel_sql);
+      my $sel_sth = $args{dbh}->prepare($sel_sql);
+
+      my $ins_sql
+         = "INSERT INTO " . $q->quote($other_db, $other_tbl)
+         . ' (' . join(', ', map { $q->quote($_) } @$cols) . ')'
+         . ' VALUES ('. join(', ', map { '?' } @$cols) . ')';
+      MKDEBUG && _d($ins_sql);
+      my $ins_sth = $dest_dbh->prepare($ins_sql);
+
+      $before_delete = sub {
+         my ( %args ) = @_;
+         my $other_row_ids = $args{other_row_ids};
+
+         MKDEBUG && _d($sel_sth->{Statement}, 'params:', @$other_row_ids);
+         $sel_sth->execute(@$other_row_ids);
+
+         while ( my $other_row = $sel_sth->fetchrow_arrayref() ) {
+            MKDEBUG && _d($ins_sth->{Statement}, 'params:', @$other_row);
+            $ins_sth->execute(@$other_row);
+         }
+
+         MKDEBUG && _d($del_sth->{Statement}, 'params:', @$other_row_ids);
+         $del_sth->execute(@$other_row_ids);
+
+         return;
+      };
+   }
+   else {
+      $before_delete = sub {
+         my ( %args ) = @_;
+         my $other_row_ids = $args{other_row_ids};
+         MKDEBUG && _d($del_sth->{Statement}, 'params:', @$other_row_ids);
+         $del_sth->execute(@$other_row_ids);
+         return;
+      };
+   }
 
    my $self = {
-      dbh          => $args{dbh},
-      bulk_delete  => $o->get('bulk-delete'),
-      limit        => $o->get('limit'),
-      delete_rows  => [],  # saved main table col vals for --bulk-delete
-      col_pos      => undef,
-      delete_sth   => $sth,
+      col_pos       => undef,
+      before_delete => $before_delete,
    };
 
    if ( $o->get('dry-run') ) {
       print "# delete_details plugin:\n"
           . "#   other table $other_tbl\n"
-          . "#   main table columns: " . join(', ', @main_tbl_cols) . "\n";
+          . "#   main table columns: " . join(', ', @main_tbl_cols) . "\n"
+          . "#   " . ($o->get('dest') ? 'archive' : 'delete') .  " rows\n";
    }
 
    return bless $self, $class;
@@ -134,56 +182,21 @@ sub before_begin {
 
 sub is_archivable {
    my ( $self, %args ) = @_;
-#   if ( $self->{bulk_delete} ) {
-#      my $row = $args{row};
-#      push @{$self->{delete_rows}}, $row->[$self->{main_col_pos}];
-#   }
    return 1;
 }
 
 sub before_delete {
    my ( $self, %args ) = @_;
-   my $row = $args{row};
-
-   MKDEBUG && _d($self->{delete_sth}->{Statement}, 'params:',
-      map { $row->[$_] } @{$self->{col_pos}});
-   $self->{delete_sth}->execute(
-      map { $row->[$_] } @{$self->{col_pos}});
-
-# Single-row delete (see comment in new()).
-#   foreach my $col_pos ( @{$self->{col_pos}} ) {
-#      MKDEBUG && _d($self->{delete_sth}->{Statement},
-#         'param:', $row->[$col_pos]);
-#      $self->{delete_sth}->execute($row->[$col_pos]);
-#   }
-
-   return;
+   my $row           = $args{row};
+   my @other_row_ids = map { $row->[$_] } @{$self->{col_pos}};
+   return $self->{before_delete}->(
+      %args,
+      other_row_ids => \@other_row_ids,
+   );
 }
 
 sub before_bulk_delete {
    my ( $self, %args ) = @_;
-
-#   if ( !scalar @{$self->{delete_rows}} ) {
-#      warn "before_bulk_delete() called without any rows to delete";
-#      return;
-#   }
-
-#   my $dbh              = $self->{dbh};
-#   my $delete_rows      = join(',', @{$self->{delete_rows}});
-#   $self->{delete_rows} = [];  # clear for next call
-
-#   my $sql = "DELETE FROM $other_tbl ";
-#           . "WHERE $other_table_col IN ($delete_rows) ";
-#           . "LIMIT $self->{limit}";
-#   MKDEBUG && _d($sql);
-#   eval {
-#      $dbh->do($sql);
-#   };
-#   if ( $EVAL_ERROR ) {
-#      MKDEBUG && _d($EVAL_ERROR);
-#      warn $EVAL_ERROR;
-#   }
-
    return;
 }
 

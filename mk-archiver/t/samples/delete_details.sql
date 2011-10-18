@@ -59,3 +59,25 @@ INSERT INTO details VALUES
 (33, 'thirty-three'), 
 (34, 'thirty-four'), 
 (35, 'thirty-five'); -- kept
+
+DROP DATABASE IF EXISTS `test_archive`;
+CREATE DATABASE `test_archive`;
+USE test_archive;
+
+CREATE TABLE `log2` (
+  `id` int(11) NOT NULL auto_increment,
+  `date` date NOT NULL default '0000-00-00',
+  `in_id` int(11) default NULL,                   -- details id 1
+  `request_id` int(11) default NULL,              -- details id 2
+  `response_id` int(11) default NULL,             -- details id 3
+  `out_id` int(11) default NULL,                  -- details id 4
+  `comment_id` int(11) default NULL,              -- details id 5
+  `state` char(2) default NULL,
+  PRIMARY KEY  (`id`)
+) ENGINE=MyISAM;
+
+CREATE TABLE `details` (
+  `id` int(11) NOT NULL auto_increment,
+  `data` text NOT NULL,
+  PRIMARY KEY  (`id`)
+) ENGINE=MyISAM;
