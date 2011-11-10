@@ -24,7 +24,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 8;
+   plan tests => 10;
 }
 
 my $output;
@@ -176,6 +176,25 @@ is_deeply(
       [qw( 34 thirty-four  )],
    ],
    'test_archive.details after archiving'
+);
+
+my $row = $dbh->selectrow_hashref("optimize table test.details");
+like(
+   $row->{msg_text},
+   qr/OK/i,
+   "Did not optimize details table"
+);
+
+$sb->load_file('master', "mk-archiver/t/samples/delete_details.sql");
+$dbh->do('use test');
+
+`$cmd --purge --source F=$cnf,D=test,t=log2,m=delete_details --dest D=test_archive,t=log2 --where "1=1" --optimize=s`;
+
+$row = $dbh->selectrow_hashref("optimize table test.details");
+like(
+   $row->{msg_text},
+   qr/already up to date/i,
+   "Analyze details table"
 );
 
 # #############################################################################

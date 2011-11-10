@@ -71,6 +71,8 @@ sub new {
    
    $other_col = $q->quote($other_col);
 
+   my $delete_table = $q->quote(($other_db || $args{db}), $other_tbl);
+
    my $del_sql
       = "DELETE FROM " . $q->quote(($other_db || $args{db}), $other_tbl)
       . " WHERE " . join(' OR ', map {"$other_col=?"} (0..$#main_tbl_cols));
@@ -132,8 +134,10 @@ sub new {
    }
 
    my $self = {
+      %args,
       col_pos       => undef,
       before_delete => $before_delete,
+      delete_table  => $delete_table,
    };
 
    if ( $o->get('dry-run') ) {
@@ -202,6 +206,17 @@ sub before_bulk_delete {
 
 sub after_finish {
    my ( $self ) = @_;
+   my $o   = $self->{OptionParser};
+   my $dbh = $self->{dbh};
+
+   if ( $o->get('analyze') || $o->get('optimize') ) {
+      my $cmd = ($o->get('analyze') ? 'ANALYZE' : 'OPTIMIZE')
+              . ($o->get('local') ? ' /*!40101 NO_WRITE_TO_BINLOG*/' : '');
+      my $sql = "$cmd TABLE $self->{delete_table}";
+      MKDEBUG && _d($sql);
+      $dbh->do($sql);
+   }
+
    return;
 }
 
