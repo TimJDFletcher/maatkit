@@ -10,7 +10,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 135;
+use Test::More tests => 136;
 use English qw(-no_match_vars);
 
 use QueryRewriter;
@@ -607,6 +607,9 @@ is_deeply( [ $qp->get_tables('ALTER TABLE db.tbl ADD COLUMN (j int)') ],
 
 is_deeply( [ $qp->get_tables('DROP TABLE db.tbl') ],
    [qw(db.tbl)], 'get_tables: DROP TABLE' );
+
+is_deeply( [ $qp->get_tables('DROP TABLE IF EXISTS db.tbl') ],
+   [qw(db.tbl)], 'get_tables: DROP TABLE IF EXISTS' );
 
 is_deeply( [ $qp->get_tables('truncate table db.tbl') ],
    [qw(db.tbl)], 'get_tables: TRUNCATE TABLE' );
