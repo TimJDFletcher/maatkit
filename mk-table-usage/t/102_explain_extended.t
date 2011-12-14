@@ -23,7 +23,7 @@ if ( !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
 }
 else {
-   plan tests => 2;
+   plan tests => 3;
 }
 
 my $output;
@@ -50,6 +50,17 @@ ok(
       "$out/slow003-002.txt",
    ),
    'EXPLAIN EXTENDED slow003.txt'
+);
+
+$output = output(
+   sub { mk_table_usage::main(@args, qw(-D sakila),
+      '--query', 'select * from foo, bar where id=1') },
+   stderr => 1,
+);
+is(
+   $output,
+   "",
+   "No error if table doesn't exist"
 );
 
 # #############################################################################
