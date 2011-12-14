@@ -53,6 +53,7 @@ use constant MKDEBUG => $ENV{MKDEBUG} || 0;
 #
 # Optional Arguments:
 #   constant_data_value - Value for constants, default "DUAL".
+#   dbh                 - dbh for running EXPLAIN EXTENDED if needed.
 #
 # Returns:
 #   TableUsage object
@@ -84,14 +85,14 @@ sub new {
 #   query - Query string
 #
 # Returns:
-#   Arrayref of hashrefs, one for each CAT, like:
+#   Arrayref of hashrefs, one for each table, like:
 #   (code start)
 #   [
-#     { context => 'DELETE',
-#       table   => 'd.t',
+#     { context => 'SELECT',
+#       table   => 'db.tbl',
 #     },
-#     { context => 'DELETE',
-#       table   => 'd.t',
+#     { context => 'WHERE',
+#       table   => 'db.tbl',
 #     },
 #   ],
 #   (code stop)
@@ -105,11 +106,10 @@ sub get_table_usage {
    MKDEBUG && _d('Getting table access for',
       substr($query, 0, 100), (length $query > 100 ? '...' : ''));
 
-   my $cats;  # arrayref of CAT hashrefs for each table
-
    # Try to parse the query first with SQLParser.  This may be overkill for
    # simple queries, but it's probably cheaper to just do this than to try
    # detect first if the query is simple enough to parse with QueryParser.
+   my $tables;
    my $query_struct;
    eval {
       $query_struct = $self->{SQLParser}->parse($query);
@@ -120,7 +120,7 @@ sub get_table_usage {
          # SQLParser can't parse this type of query, so it's probably some
          # data definition statement with just a table list.  Use QueryParser
          # to extract the table list and hope we're not wrong.
-         $cats = $self->_get_tables_used_from_query_parser(%args);
+         $tables = $self->_get_tables_used_from_query_parser(%args);
       }
       else {
          # SQLParser failed to parse the query due to some error.
@@ -130,14 +130,14 @@ sub get_table_usage {
    else {
       # SQLParser parsed the query, so now we need to examine its structure
       # to determine the CATs for each table.
-      $cats = $self->_get_tables_used_from_query_struct(
+      $tables = $self->_get_tables_used_from_query_struct(
          query_struct => $query_struct,
          %args,
       );
    }
 
-   MKDEBUG && _d('Query table access:', Dumper($cats));
-   return $cats;
+   MKDEBUG && _d('Query table usage:', Dumper($tables));
+   return $tables;
 }
 
 sub _get_tables_used_from_query_parser {
@@ -176,23 +176,16 @@ sub _get_tables_used_from_query_parser {
 
 sub _get_tables_used_from_query_struct {
    my ( $self, %args ) = @_;
-   my @required_args = qw(query_struct);
+   my @required_args = qw(query_struct query);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($query_struct) = @args{@required_args};
-   my $sp             = $self->{SQLParser};
 
    MKDEBUG && _d('Getting table used from query struct');
 
-   # The table references clause is different depending on the query type.
    my $query_type = uc $query_struct->{type};
-   my $tbl_refs   = $query_type =~ m/(?:SELECT|DELETE)/  ? 'from'
-                  : $query_type =~ m/(?:INSERT|REPLACE)/ ? 'into'
-                  : $query_type =~ m/UPDATE/             ? 'tables'
-                  : die "Cannot find table references for $query_type queries";
-   my $tables     = $query_struct->{$tbl_refs};
-
+   my $tables     = $self->_get_tables($query_struct);
    if ( !$tables || @$tables == 0 ) {
       MKDEBUG && _d("Query does not use any tables");
       return [
@@ -201,13 +194,19 @@ sub _get_tables_used_from_query_struct {
    }
 
    # Get tables used in the query's WHERE clause, if it has one.
-   my $where;
+   my ($where, $ambig);
    if ( $query_struct->{where} ) {
-      $where = $self->_get_tables_used_in_where(
+      ($where, $ambig) = $self->_get_tables_used_in_where(
          %args,
          tables  => $tables,
          where   => $query_struct->{where},
       );
+
+      if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+         MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
+         %args = $self->_reparse_query(%args);
+         return $self->_get_tables_used_from_query_struct(%args);
+      }
    }
 
    my @tables_used;
@@ -287,11 +286,18 @@ sub _get_tables_used_from_query_struct {
       # but that doesn't mean data from the table is returned to the user;
       # the table could be used purely for JOIN or WHERE.
       if ( $query_type eq 'SELECT' ) {
-         my $clist_tables = $self->_get_tables_used_in_columns(
+         my ($clist_tables, $ambig) = $self->_get_tables_used_in_columns(
             %args,
             tables  => $tables,
             columns => $query_struct->{columns},
          );
+
+         if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+            MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
+            %args = $self->_reparse_query(%args);
+            return $self->_get_tables_used_from_query_struct(%args);
+         }
+
          foreach my $table ( @$clist_tables ) {
             my $table_usage = {
                context => 'SELECT',
@@ -332,13 +338,21 @@ sub _get_tables_used_from_query_struct {
                }
                elsif ( $table->{join}->{condition} eq 'on' ) {
                   MKDEBUG && _d("Table joined with ON condition");
-                  my $on_tables = $self->_get_tables_used_in_where(
+                  my ($on_tables, $ambig) = $self->_get_tables_used_in_where(
                      %args,
                      tables => $tables,
                      where  => $table->{join}->{where},
                      clause => 'JOIN condition',  # just for debugging
                   );
                   MKDEBUG && _d("JOIN ON tables:", Dumper($on_tables));
+
+                  if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+                     MKDEBUG && _d("Using EXPLAIN EXTENDED",
+                        "to disambiguate columns");
+                     %args = $self->_reparse_query(%args);
+                     return $self->_get_tables_used_from_query_struct(%args);
+                  }
+
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
                      $self->_change_context(
                         tables      => $tables,
@@ -436,7 +450,7 @@ sub _get_tables_used_in_columns {
 
    MKDEBUG && _d("Getting tables used in CLIST");
    my @tables;
-
+   my $ambig = 0;  # found any ambiguous columns?
    if ( @$tables == 1 ) {
       # SELECT a, b FROM t WHERE ... -- one table so cols a and b must
       # be from that table.
@@ -480,7 +494,12 @@ sub _get_tables_used_in_columns {
       my %seen;
       COLUMN:
       foreach my $column ( @$columns ) {
-         next COLUMN unless $column->{tbl};
+         if ( !$column->{tbl} ) {
+            MKDEBUG && _d("Column", $column->{col}, "is not table-qualified;",
+               "and query has multiple tables; cannot determine its table");
+            $ambig++;
+            next COLUMN;
+         }
          my $table = $self->_qualify_table_name(
             %args,
             db  => $column->{db},
@@ -490,7 +509,7 @@ sub _get_tables_used_in_columns {
       }
    }
 
-   return \@tables;
+   return (\@tables, $ambig);
 }
 
 sub _get_tables_used_in_where {
@@ -506,6 +525,7 @@ sub _get_tables_used_in_where {
 
    my %filter_tables;
    my %join_tables;
+   my $ambig = 0;  # found any ambiguous tables?
    CONDITION:
    foreach my $cond ( @$where ) {
       MKDEBUG && _d("Condition:", Dumper($cond));
@@ -541,6 +561,7 @@ sub _get_tables_used_in_where {
                      && $cond->{$arg} !~ m/^[\d.]+$/) { # not a number
                      $unknown_table = 1;
                   }
+                  $ambig++;
                   next ARG;
                }
             }
@@ -591,10 +612,13 @@ sub _get_tables_used_in_where {
    }  # CONDITION
 
    # NOTE: the sort is not necessary, it's done so test can be deterministic.
-   return {
-      filter_tables => [ sort keys %filter_tables ],
-      joined_tables => [ sort keys %join_tables   ],
-   };
+   return (
+      {
+         filter_tables => [ sort keys %filter_tables ],
+         joined_tables => [ sort keys %join_tables   ],
+      },
+      $ambig,
+   );
 }
 
 sub _get_tables_used_in_set {
@@ -745,6 +769,57 @@ sub _change_context {
    }
    MKDEBUG && _d("Table", $table, "is not used; cannot set its context");
    return;
+}
+
+sub _explain_query {
+   my ($self, $query, $db) = @_;
+   my $dbh  = $self->{dbh};
+
+   my $sql;
+   if ( $db ) {
+      $sql = "USE `$db`";
+      MKDEBUG && _d($dbh, $sql);
+      $dbh->do($sql);
+   }
+
+   $sql = "EXPLAIN EXTENDED $query";
+   MKDEBUG && _d($dbh, $sql);
+   $dbh->do($sql);  # don't need the result
+
+   $sql = "SHOW WARNINGS";
+   MKDEBUG && _d($dbh, $sql);
+   my $warning = $dbh->selectrow_hashref($sql);
+   if (    ($warning->{level} || "") !~ m/Note/i
+        || ($warning->{code}  || 0)  != 1003 ) {
+      die "EXPLAIN EXTENDED failed:\n"
+         . "  Level: " . ($warning->{level}   || "") . "\n"
+         . "   Code: " . ($warning->{code}    || "") . "\n"
+         . "Message: " . ($warning->{message} || "") . "\n";
+   }
+
+   return $warning->{message};
+}
+
+sub _get_tables {
+   my ( $self, $query_struct ) = @_;
+
+   # The table references clause is different depending on the query type.
+   my $query_type = uc $query_struct->{type};
+   my $tbl_refs   = $query_type =~ m/(?:SELECT|DELETE)/  ? 'from'
+                  : $query_type =~ m/(?:INSERT|REPLACE)/ ? 'into'
+                  : $query_type =~ m/UPDATE/             ? 'tables'
+                  : die "Cannot find table references for $query_type queries";
+
+   return $query_struct->{$tbl_refs};
+}
+
+sub _reparse_query {
+   my ($self, %args) = @_;
+   MKDEBUG && _d("Reparsing query with EXPLAIN EXTENDED");
+   $args{query}          = $self->_explain_query($args{query});
+   $args{query_struct}   = $self->{SQLParser}->parse($args{query});
+   $args{query_reparsed} = 1;
+   return %args;
 }
 
 sub _d {

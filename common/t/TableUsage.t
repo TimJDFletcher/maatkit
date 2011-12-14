@@ -9,12 +9,17 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 26;
+use Test::More tests => 29;
 
 use MaatkitTest;
 use QueryParser;
 use SQLParser;
 use TableUsage;
+use Sandbox;
+
+my $dp = new DSNParser(opts=>$dsn_opts);
+my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
+my $dbh = $sb->get_dbh_for('master');
 
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
@@ -619,6 +624,99 @@ test_get_table_usage(
 
 # Set it back for the next tests.
 $sp->set_Schema(undef);
+
+# #############################################################################
+# Use a dbh for EXPLAIN EXTENDED.
+# #############################################################################
+SKIP: {
+   skip 'Cannot connect to sandbox master', 1 unless $dbh;
+
+   $ta = new TableUsage(
+      QueryParser => $qp,
+      SQLParser   => $sp,
+      dbh         => $dbh,
+   );
+
+   $dbh->do('USE sakila');
+
+   test_get_table_usage(
+      "select city_id, country.country_id from city, country where city_id>100 or country='Brazil' limit 1",
+      [
+         [ { context => 'SELECT',
+             table   => 'sakila.city'
+            },
+            { context => 'SELECT',
+              table   => 'sakila.country'
+            },
+            { context => 'TLIST',
+              table   => 'sakila.city'
+            },
+            { context => 'TLIST',
+              table   => 'sakila.country'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.city'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.country'
+            }
+         ],
+      ],
+      "Disambiguate WHERE columns"
+   );
+   
+   test_get_table_usage(
+      "select city_id, country from city, country where city.city_id>100 or country.country='China' limit 1",
+      [
+         [ { context => 'SELECT',
+             table   => 'sakila.city'
+            },
+            { context => 'SELECT',
+              table   => 'sakila.country'
+            },
+            { context => 'TLIST',
+              table   => 'sakila.city'
+            },
+            { context => 'TLIST',
+              table   => 'sakila.country'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.city'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.country'
+            }
+         ],
+      ],
+      "Disambiguate CLIST columns"
+   );
+
+   test_get_table_usage(
+      "select city.city, country.country from city join country on city=country where city.city_id>100 or country.country='China' limit 1",
+      [
+         [ { context => 'SELECT',
+             table   => 'sakila.city'
+            },
+            { context => 'SELECT',
+              table   => 'sakila.country'
+            },
+            { context => 'JOIN',
+              table   => 'sakila.city'
+            },
+            { context => 'JOIN',
+              table   => 'sakila.country'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.city'
+            },
+            { context => 'WHERE',
+              table   => 'sakila.country'
+            }
+         ],
+      ],
+      "Disambiguate JOIN columns"
+   );
+}
 
 # #############################################################################
 # Done.
