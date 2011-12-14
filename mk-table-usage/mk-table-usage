@@ -6239,39 +6239,6 @@ sub report_table_usage {
    return;
 }
 
-sub qualify_query {
-   my ( %args ) = @_;
-   my @required_args = qw(query dbh);
-   foreach my $arg ( @required_args ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my ($query, $dbh) = @args{@required_args};
-   my $sql;
-
-   if ( my $db = $args{db} ) {
-      $sql = "USE $db";
-      MKDEBUG && _d($dbh, $sql);
-      $dbh->do($sql);
-   }
-
-   $sql = "EXPLAIN EXTENDED $query";
-   MKDEBUG && _d($dbh, $sql);
-   $dbh->do($sql);  # don't need the result
-
-   $sql = "SHOW WARNINGS";
-   MKDEBUG && _d($dbh, $sql);
-   my $warning = $dbh->selectrow_hashref($sql);
-   if (    ($warning->{level} || "") !~ m/Note/i
-        || ($warning->{code}  || 0)  != 1003 ) {
-      die "EXPLAIN EXTENDED failed:\n"
-         . "  Level: " . ($warning->{level}   || "") . "\n"
-         . "   Code: " . ($warning->{code}    || "") . "\n"
-         . "Message: " . ($warning->{message} || "") . "\n";
-   }
-
-   return $warning->{message};
-}
-
 sub get_cxn {
    my ( %args ) = @_;
    my @required_args = qw(dsn OptionParser DSNParser);
