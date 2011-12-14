@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 6;
+use Test::More tests => 7;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -73,6 +73,16 @@ like(
    $output,
    qr/SELECT <const>/,
    "--constant-data-value"
+);
+
+$output = output(
+   sub { mk_table_usage::main('--query', 'INSERT INTO t VALUES (42)',
+      qw(--constant-data-value), "") },
+);
+like(
+   $output,
+   qr/^SELECT\s+$/m,
+   '--constant-data-value ""'
 );
 
 # ############################################################################
