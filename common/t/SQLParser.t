@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 139;
+use Test::More tests => 140;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2065,7 +2065,7 @@ my @cases = (
                   from    => 'l ',
                   where   => 'col<100'
                },
-               columns => [ { col => 'max(col)' } ],
+               columns => [ { col => 'col' } ],
                context => 'scalar',
                from    => [ { tbl => 'l' } ],
                nested  => 1,
@@ -2371,10 +2371,11 @@ is_deeply(
 );
 
 # ###########################################################################
-# Parse <=> correctly (not as <=).
+# Various parsing issues.
 # ###########################################################################
 $sp = new SQLParser();
 
+# Parse <=> correctly (not as <=).
 my $struct = $sp->parse("select * from t1 join t2 on t1.id <=> t2.id where t1.foo<=>'bar'");
 
 is(
@@ -2387,6 +2388,17 @@ is(
    $struct->{where}->[0]->{operator},
    '<=>',
    "X<=>Y"
+);
+
+# Parse column max(a.datetime)
+$struct = $sp->parse("select max(a.datetime) from t");
+
+is_deeply(
+   $struct->{columns},
+   [ { tbl => 'a',
+       col => 'datetime',
+   } ],
+   "select max(a.datetime)"
 );
 
 # #############################################################################

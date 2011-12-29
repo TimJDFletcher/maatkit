@@ -1217,6 +1217,13 @@ sub parse_identifier {
    return unless $type && $ident;
    MKDEBUG && _d("Parsing", $type, "identifier:", $ident);
 
+   if ( $ident =~ m/^\w+\(/ ) {  # Function like MIN(col)
+      my ($func, $expr) = $ident =~ m/^(\w+)\(([^\)]*)\)/;
+      MKDEBUG && _d('Function', $func, 'arg', $expr);
+      return { col => $ident } unless $expr;  # NOW()
+      $ident = $expr;  # col from MAX(col)
+   }
+
    my %ident_struct;
    my @ident_parts = map { s/`//g; $_; } split /[.]/, $ident;
    if ( @ident_parts == 3 ) {
