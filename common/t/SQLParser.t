@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 137;
+use Test::More tests => 139;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2368,6 +2368,25 @@ is_deeply(
       unknown  => undef,
    },
    "Query struct with Schema"
+);
+
+# ###########################################################################
+# Parse <=> correctly (not as <=).
+# ###########################################################################
+$sp = new SQLParser();
+
+my $struct = $sp->parse("select * from t1 join t2 on t1.id <=> t2.id where t1.foo<=>'bar'");
+
+is(
+   $struct->{from}->[1]->{join}->{where}->[0]->{operator},
+   '<=>',
+   "X <=> Y"
+);
+
+is(
+   $struct->{where}->[0]->{operator},
+   '<=>',
+   "X<=>Y"
 );
 
 # #############################################################################

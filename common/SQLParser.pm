@@ -706,7 +706,7 @@ sub parse_where {
    # not interested in weird stuff like that.
    my $op_symbol = qr/
       (?:
-       <=
+       <=(?:>)?
       |>=
       |<>
       |!=
