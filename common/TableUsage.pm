@@ -1,4 +1,4 @@
-# This program is copyright 2011 Percona Inc.
+# This program is copyright 2011-2012 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -185,6 +185,29 @@ sub _get_tables_used_from_query_struct {
    MKDEBUG && _d('Getting table used from query struct');
 
    my $query_type = uc $query_struct->{type};
+
+   if ( $query_type eq 'CREATE' ) {
+      MKDEBUG && _d('CREATE query');
+      my $sel_tables;
+      if ( my $sq_struct = $query_struct->{subqueries}->[0] ) {
+         MKDEBUG && _d('CREATE query with SELECT');
+         $sel_tables = $self->_get_tables_used_from_query_struct(
+            %args,
+            query        => $sq_struct->{query},
+            query_struct => $sq_struct,
+         );
+      }
+      return [
+         [
+            {
+               context => 'CREATE',
+               table   => $query_struct->{name},
+            },
+            ($sel_tables ? @{$sel_tables->[0]} : ()),
+         ],
+      ];
+   }
+
    my $tables     = $self->_get_tables($query_struct);
    if ( !$tables || @$tables == 0 ) {
       MKDEBUG && _d("Query does not use any tables");

@@ -1,4 +1,4 @@
-# This program is copyright 2010-2011 Percona Inc.
+# This program is copyright 2010-2012 Percona Inc.
 # Feedback and improvements are welcome.
 #
 # THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
@@ -133,6 +133,7 @@ sub parse {
       |REPLACE
       |SELECT
       |UPDATE
+      |CREATE
    )/xi;
 
    # Flatten and clean query.
@@ -160,6 +161,11 @@ sub parse {
       MKDEBUG && _d('Removing subqueries');
       @subqueries = $self->remove_subqueries($query);
       $query      = shift @subqueries;
+   }
+   elsif ( $type eq 'create' && $query =~ m/\s+SELECT/ ) {
+      MKDEBUG && _d('CREATE..SELECT');
+      ($subqueries[0]->{query}) = $query =~ m/\s+(SELECT .+)/;
+      $query =~ s/\s+SELECT.+//;
    }
 
    # Parse raw text parts from query.  The parse_TYPE subs only do half
@@ -441,6 +447,20 @@ sub parse_update {
    my $clauses  = qr/(SET|WHERE|ORDER BY|LIMIT)/i;
    return _parse_query(@_, $keywords, 'tables', $clauses);
 
+}
+
+sub parse_create {
+   my ($self, $query) = @_;
+   my ($obj, $name) = $query =~ m/
+      (\S+)\s+
+      (?:IF NOT EXISTS\s+)?
+      (\S+)
+   /xi;
+   return {
+      object  => lc $obj,
+      name    => $name,
+      unknown => undef,
+   };
 }
 
 # Sub: parse_from

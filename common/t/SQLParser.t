@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 140;
+use Test::More tests => 142;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2281,6 +2281,48 @@ my @cases = (
          unknown => undef,
       },
    },
+   
+   # ########################################################################
+   # CREATE
+   # ########################################################################
+   {  name   => 'CREATE TABLE foo',
+      query  => 'CREATE TABLE foo (id INT)',
+      struct => {
+         type    => 'create',
+         clauses => {},
+         object  => 'table',
+         name    => 'foo',
+         unknown => undef,
+      },
+   },
+   {  name   => 'CREATE..SELECT',
+      query  => 'CREATE TABLE foo SELECT c FROM t WHERE i=1',
+      struct => {
+         type    => 'create',
+         clauses => {},
+         object  => 'table',
+         name    => 'foo',
+         unknown => undef,
+         subqueries => [{
+             clauses => {
+               columns => 'c ',
+               from    => 't ',
+               where   => 'i=1'
+             },
+             columns => [{ col => 'c' }],
+             from    => [{ tbl => 't' }],
+             query   => 'SELECT c FROM t WHERE i=1',
+             type    => 'select',
+             unknown => undef,
+             where   => [{
+                 left_arg  => 'i',
+                 operator  => '=',
+                 right_arg => '1',
+                 predicate => undef,
+             }],
+         }],
+      },
+   },
 );
 
 foreach my $test ( @cases ) {
@@ -2400,6 +2442,10 @@ is_deeply(
    } ],
    "select max(a.datetime)"
 );
+
+# Parse multi-column USING().
+#$struct = $sp->parse("select a.dt, a.hr, a.count from d1.tbl a left join l.type b using (dt,hr) where b.type is null OR b.type=0");
+#print Dumper($struct);
 
 # #############################################################################
 # Done.

@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 29;
+use Test::More tests => 31;
 
 use MaatkitTest;
 use QueryParser;
@@ -542,6 +542,41 @@ $ta = new TableUsage(
    QueryParser => $qp,
    SQLParser   => $sp,
 );
+
+
+# ###########################################################################
+# CREATE
+# ###########################################################################
+
+test_get_table_usage(
+   "CREATE TABLE db.tbl (id INT) ENGINE=InnoDB",
+   [
+      [
+         { context => 'CREATE',
+           table   => 'db.tbl',
+         },
+      ],
+   ],
+   "CREATE TABLE",
+); 
+
+test_get_table_usage(
+   "CREATE TABLE db.tbl SELECT city_id FROM sakila.city WHERE city_id>100",
+   [
+      [
+         { context => 'CREATE',
+           table   => 'db.tbl',
+         },
+         { context => 'SELECT',
+           table   => 'sakila.city',
+         },
+         { context => 'WHERE',
+           table   => 'sakila.city',
+         },
+      ],
+   ],
+   "CREATE..SELECT"
+); 
 
 # ############################################################################
 # Use Schema instead of EXPLAIN EXTENDED.
