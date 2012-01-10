@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 7;
+use Test::More tests => 8;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -48,6 +48,21 @@ ok(
       "$out/drop-table-if-exists.txt",
    ),
    'DROP TABLE IF EXISTS'
+);
+
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, '--query',
+         "create table temp.5 (
+            datetime DATETIME,
+            posted DATETIME,
+            PRIMARY KEY(datetime)
+         )
+         SELECT c FROM t WHERE id=1")
+      },
+      "$out/create001.txt",
+   ),
+   'CREATE..SELECT'
 );
 
 # ############################################################################

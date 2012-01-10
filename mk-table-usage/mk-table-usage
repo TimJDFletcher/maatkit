@@ -2781,6 +2781,7 @@ sub parse {
       |REPLACE
       |SELECT
       |UPDATE
+      |CREATE
    )/xi;
 
    $query = $self->clean_query($query);
@@ -2803,6 +2804,11 @@ sub parse {
       MKDEBUG && _d('Removing subqueries');
       @subqueries = $self->remove_subqueries($query);
       $query      = shift @subqueries;
+   }
+   elsif ( $type eq 'create' && $query =~ m/\s+SELECT/ ) {
+      MKDEBUG && _d('CREATE..SELECT');
+      ($subqueries[0]->{query}) = $query =~ m/\s+(SELECT .+)/;
+      $query =~ s/\s+SELECT.+//;
    }
 
    my $parse_func = "parse_$type";
@@ -3010,6 +3016,20 @@ sub parse_update {
    my $clauses  = qr/(SET|WHERE|ORDER BY|LIMIT)/i;
    return _parse_query(@_, $keywords, 'tables', $clauses);
 
+}
+
+sub parse_create {
+   my ($self, $query) = @_;
+   my ($obj, $name) = $query =~ m/
+      (\S+)\s+
+      (?:IF NOT EXISTS\s+)?
+      (\S+)
+   /xi;
+   return {
+      object  => lc $obj,
+      name    => $name,
+      unknown => undef,
+   };
 }
 
 sub parse_from {
@@ -3648,7 +3668,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7637
+# TableUsage package 7645
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3764,6 +3784,29 @@ sub _get_tables_used_from_query_struct {
    MKDEBUG && _d('Getting table used from query struct');
 
    my $query_type = uc $query_struct->{type};
+
+   if ( $query_type eq 'CREATE' ) {
+      MKDEBUG && _d('CREATE query');
+      my $sel_tables;
+      if ( my $sq_struct = $query_struct->{subqueries}->[0] ) {
+         MKDEBUG && _d('CREATE query with SELECT');
+         $sel_tables = $self->_get_tables_used_from_query_struct(
+            %args,
+            query        => $sq_struct->{query},
+            query_struct => $sq_struct,
+         );
+      }
+      return [
+         [
+            {
+               context => 'CREATE',
+               table   => $query_struct->{name},
+            },
+            ($sel_tables ? @{$sel_tables->[0]} : ()),
+         ],
+      ];
+   }
+
    my $tables     = $self->_get_tables($query_struct);
    if ( !$tables || @$tables == 0 ) {
       MKDEBUG && _d("Query does not use any tables");
