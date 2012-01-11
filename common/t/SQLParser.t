@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 142;
+use Test::More tests => 143;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2444,8 +2444,23 @@ is_deeply(
 );
 
 # Parse multi-column USING().
-#$struct = $sp->parse("select a.dt, a.hr, a.count from d1.tbl a left join l.type b using (dt,hr) where b.type is null OR b.type=0");
-#print Dumper($struct);
+$struct = $sp->parse("select * from d.t1 a left join d.t2 using (c1, c2) where b=1");
+is_deeply(
+   $struct->{from},
+   [
+      { db => 'd', tbl => 't1', alias => 'a', },
+      { db => 'd', tbl => 't2',
+         join => {
+            ansi      => 1,
+            columns   => ['c1', 'c2'],
+            condition => 'using',
+            to        => 't1',
+            type      => 'left',
+         },
+      },
+   ],
+   "JOIN USING (col1, col2)"
+);
 
 # #############################################################################
 # Done.

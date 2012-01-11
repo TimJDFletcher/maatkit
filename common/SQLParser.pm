@@ -506,6 +506,11 @@ sub parse_from {
    return unless $from;
    MKDEBUG && _d('Parsing FROM', $from);
 
+   # Extract the column list from USING(col, ...) clauses else
+   # the inner commas will be captured by $comma_join.
+   my $using_cols;
+   ($from, $using_cols) = $self->remove_using_columns($from);
+
    # Table references in a FROM clause are separated either by commas
    # (comma/theta join, implicit INNER join) or the JOIN keyword (ansi
    # join).  JOIN can be preceded by other keywords like LEFT, RIGHT,
@@ -553,9 +558,7 @@ sub parse_from {
             # Although calling parse_columns() works, it's overkill.
             # This is not a columns def as in "SELECT col1, col2", it's
             # a simple csv list of column names without aliases, etc.
-            $join_condition_value =~ s/^\s*\(//;
-            $join_condition_value =~ s/\)\s*$//;
-            $join->{columns} = $self->_parse_csv($join_condition_value);
+            $join->{columns} = $self->_parse_csv(shift @$using_cols);
          }
       }
       elsif ( $thing =~ m/(?:,|JOIN)/i ) {
@@ -1183,6 +1186,23 @@ sub remove_subqueries {
    }
 
    return $query, @subqueries;
+}
+
+sub remove_using_columns {
+   my ($self, $from) = @_;
+   return unless $from;
+   MKDEBUG && _d('Removing cols from USING clauses');
+   my $using = qr/
+      \bUSING
+      \s*
+      \(
+         ([^\)]+)
+      \)
+   /xi;
+   my @cols;
+   $from =~ s/$using/push @cols, $1; "USING ($#cols)"/eg;
+   MKDEBUG && _d('FROM:', $from, Dumper(\@cols));
+   return $from, \@cols;
 }
 
 # Sub: parse_identifiers
