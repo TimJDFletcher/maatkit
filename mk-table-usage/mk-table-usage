@@ -3037,6 +3037,9 @@ sub parse_from {
    return unless $from;
    MKDEBUG && _d('Parsing FROM', $from);
 
+   my $using_cols;
+   ($from, $using_cols) = $self->remove_using_columns($from);
+
    my $comma_join = qr/(?>\s*,\s*)/;
    my $ansi_join  = qr/(?>
      \s+
@@ -3068,9 +3071,7 @@ sub parse_from {
             $join->{where} = $where; 
          }
          else { # USING
-            $join_condition_value =~ s/^\s*\(//;
-            $join_condition_value =~ s/\)\s*$//;
-            $join->{columns} = $self->_parse_csv($join_condition_value);
+            $join->{columns} = $self->_parse_csv(shift @$using_cols);
          }
       }
       elsif ( $thing =~ m/(?:,|JOIN)/i ) {
@@ -3527,6 +3528,23 @@ sub remove_subqueries {
    }
 
    return $query, @subqueries;
+}
+
+sub remove_using_columns {
+   my ($self, $from) = @_;
+   return unless $from;
+   MKDEBUG && _d('Removing cols from USING clauses');
+   my $using = qr/
+      \bUSING
+      \s*
+      \(
+         ([^\)]+)
+      \)
+   /xi;
+   my @cols;
+   $from =~ s/$using/push @cols, $1; "USING ($#cols)"/eg;
+   MKDEBUG && _d('FROM:', $from, Dumper(\@cols));
+   return $from, \@cols;
 }
 
 sub parse_identifiers {

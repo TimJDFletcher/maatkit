@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 8;
+use Test::More tests => 9;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -63,6 +63,18 @@ ok(
       "$out/create001.txt",
    ),
    'CREATE..SELECT'
+);
+
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, '--query',
+         "select a.dt,a.hr,a.count 
+            from temp.temp6 a left join n.type b using (dt,hr) 
+            where b.type is null OR b.type=0")
+      },
+      "$out/query001.txt",
+   ),
+   'Multi-column USING'
 );
 
 # ############################################################################
