@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 33;
+use Test::More tests => 34;
 
 use MaatkitTest;
 use QueryParser;
@@ -776,6 +776,27 @@ SKIP: {
          ],
       ],
       "Disambiguate JOIN columns"
+   );
+
+   test_get_table_usage(
+      "SELECT COUNT(*), MAX(country_id), MIN(country_id) FROM sakila.city A JOIN sakila.country B USING (country_id) WHERE B.country = 'Brazil'",
+      [
+         [
+            { context => 'SELECT',
+              table   => 'sakila.city',
+            },
+            { context => 'JOIN',
+              table => 'sakila.city',
+            },
+            { context => 'JOIN',
+              table => 'sakila.country',
+            },
+            { context => 'WHERE',
+              table => 'sakila.country',
+            },
+         ],
+      ],
+      "SELECT with multiple CLIST functions"
    );
 }
 

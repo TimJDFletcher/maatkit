@@ -726,10 +726,12 @@ sub _get_real_table_name {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($tables, $name) = @args{@required_args};
+   # becomes t in the column list.
+   $name = lc $name;
 
    foreach my $table ( @$tables ) {
-      if ( $table->{tbl} eq $name
-           || ($table->{alias} || "") eq $name ) {
+      if ( lc($table->{tbl}) eq $name
+           || lc($table->{alias} || "") eq $name ) {
          MKDEBUG && _d("Real table name for", $name, "is", $table->{tbl});
          return $table->{tbl};
       }
