@@ -102,11 +102,13 @@ sub get_table_usage {
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($query)   = @args{@required_args};
+   my ($query) = @args{@required_args};
    MKDEBUG && _d('Getting table access for',
       substr($query, 0, 100), (length $query > 100 ? '...' : ''));
 
-   # Try to parse the query first with SQLParser.  This may be overkill for
+   $self->{errors} = [];
+
+   # Try t
    # simple queries, but it's probably cheaper to just do this than to try
    # detect first if the query is simple enough to parse with QueryParser.
    my $tables;
@@ -138,6 +140,11 @@ sub get_table_usage {
 
    MKDEBUG && _d('Query table usage:', Dumper($tables));
    return $tables;
+}
+
+sub errors {
+   my ($self) = @_;
+   return $self->{errors};
 }
 
 sub _get_tables_used_from_query_parser {
@@ -227,8 +234,11 @@ sub _get_tables_used_from_query_struct {
 
       if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
          MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-         %args = $self->_reparse_query(%args);
-         return $self->_get_tables_used_from_query_struct(%args);
+         my $new_args = $self->_reparse_query(%args);
+         if ( $new_args ) {
+            return $self->_get_tables_used_from_query_struct(%$new_args);
+         } 
+         MKDEBUG && _d('Failed to disambiguate columns');
       }
    }
 
@@ -317,8 +327,11 @@ sub _get_tables_used_from_query_struct {
 
          if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
             MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-            %args = $self->_reparse_query(%args);
-            return $self->_get_tables_used_from_query_struct(%args);
+            my $new_args = $self->_reparse_query(%args);
+            if ( $new_args ) {
+               return $self->_get_tables_used_from_query_struct(%$new_args);
+            } 
+            MKDEBUG && _d('Failed to disambiguate columns');
          }
 
          foreach my $table ( @$clist_tables ) {
@@ -372,8 +385,12 @@ sub _get_tables_used_from_query_struct {
                   if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
                      MKDEBUG && _d("Using EXPLAIN EXTENDED",
                         "to disambiguate columns");
-                     %args = $self->_reparse_query(%args);
-                     return $self->_get_tables_used_from_query_struct(%args);
+                     my $new_args = $self->_reparse_query(%args);
+                     if ( $new_args ) {
+                        return $self->_get_tables_used_from_query_struct(
+                           %$new_args);
+                     } 
+                     MKDEBUG && _d('Failed to disambiguate columns'); 
                   }
 
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
@@ -807,7 +824,17 @@ sub _explain_query {
 
    $sql = "EXPLAIN EXTENDED $query";
    MKDEBUG && _d($dbh, $sql);
-   $dbh->do($sql);  # don't need the result
+   eval {
+      $dbh->do($sql);  # don't need the result
+   };
+   if ( $EVAL_ERROR ) {
+      if ( $EVAL_ERROR =~ m/No database/i ) {
+         MKDEBUG && _d($EVAL_ERROR);
+         push @{$self->{errors}}, 'NO_DB_SELECTED';
+         return;
+      }
+      die $EVAL_ERROR;
+   }
 
    $sql = "SHOW WARNINGS";
    MKDEBUG && _d($dbh, $sql);
@@ -839,10 +866,13 @@ sub _get_tables {
 sub _reparse_query {
    my ($self, %args) = @_;
    MKDEBUG && _d("Reparsing query with EXPLAIN EXTENDED");
-   $args{query}          = $self->_explain_query($args{query});
-   $args{query_struct}   = $self->{SQLParser}->parse($args{query});
+   my $new_query = $self->_explain_query($args{query});
+   if ( $new_query ) {
+      $args{query}        = $new_query;
+      $args{query_struct} = $self->{SQLParser}->parse($args{query});
+   }
    $args{query_reparsed} = 1;
-   return %args;
+   return \%args;
 }
 
 sub _d {

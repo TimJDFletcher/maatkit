@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 31;
+use Test::More tests => 33;
 
 use MaatkitTest;
 use QueryParser;
@@ -665,11 +665,37 @@ $sp->set_Schema(undef);
 # #############################################################################
 SKIP: {
    skip 'Cannot connect to sandbox master', 1 unless $dbh;
+   
 
    $ta = new TableUsage(
       QueryParser => $qp,
       SQLParser   => $sp,
       dbh         => $dbh,
+   );
+
+   # Compare this with the same query/test after USE sakila.
+   test_get_table_usage(
+      "select city_id, country.country_id from city, country where city_id>100 or country='Brazil' limit 1",
+      [
+         [
+            { context => 'SELECT',
+              table => 'country'
+            },
+            { context => 'TLIST',
+              table => 'city'
+            },
+            { context => 'TLIST',
+              table => 'country'
+            },
+         ]
+      ],
+      "Ambiguous tables"
+   );
+   
+   is_deeply(
+      $ta->errors(),
+      [ 'NO_DB_SELECTED' ],
+      'NO_DB_SELECTED error'
    );
 
    $dbh->do('USE sakila');
