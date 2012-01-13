@@ -35,12 +35,11 @@ my $out  = "mk-table-usage/t/samples/out/";
 
 $output = output(
    sub { mk_table_usage::main(@args, "$in/slow003.txt") },
-   stderr => 1,
 );
 
 like(
    $output,
-   qr/No database/,
+   qr/^ERROR NO_DB_SELECTED/m,
    "--explain-extended doesn't work without a database"
 );
 

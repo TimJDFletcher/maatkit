@@ -3686,7 +3686,7 @@ sub _d {
 # ###########################################################################
 
 # ###########################################################################
-# TableUsage package 7645
+# TableUsage package 7650
 # This package is a copy without comments from the original.  The original
 # with comments and its test file can be found in the SVN repository at,
 #   trunk/common/TableUsage.pm
@@ -3730,9 +3730,11 @@ sub get_table_usage {
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($query)   = @args{@required_args};
+   my ($query) = @args{@required_args};
    MKDEBUG && _d('Getting table access for',
       substr($query, 0, 100), (length $query > 100 ? '...' : ''));
+
+   $self->{errors} = [];
 
    my $tables;
    my $query_struct;
@@ -3757,6 +3759,11 @@ sub get_table_usage {
 
    MKDEBUG && _d('Query table usage:', Dumper($tables));
    return $tables;
+}
+
+sub errors {
+   my ($self) = @_;
+   return $self->{errors};
 }
 
 sub _get_tables_used_from_query_parser {
@@ -3843,8 +3850,11 @@ sub _get_tables_used_from_query_struct {
 
       if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
          MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-         %args = $self->_reparse_query(%args);
-         return $self->_get_tables_used_from_query_struct(%args);
+         my $new_args = $self->_reparse_query(%args);
+         if ( $new_args ) {
+            return $self->_get_tables_used_from_query_struct(%$new_args);
+         } 
+         MKDEBUG && _d('Failed to disambiguate columns');
       }
    }
 
@@ -3925,8 +3935,11 @@ sub _get_tables_used_from_query_struct {
 
          if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
             MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-            %args = $self->_reparse_query(%args);
-            return $self->_get_tables_used_from_query_struct(%args);
+            my $new_args = $self->_reparse_query(%args);
+            if ( $new_args ) {
+               return $self->_get_tables_used_from_query_struct(%$new_args);
+            } 
+            MKDEBUG && _d('Failed to disambiguate columns');
          }
 
          foreach my $table ( @$clist_tables ) {
@@ -3980,8 +3993,12 @@ sub _get_tables_used_from_query_struct {
                   if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
                      MKDEBUG && _d("Using EXPLAIN EXTENDED",
                         "to disambiguate columns");
-                     %args = $self->_reparse_query(%args);
-                     return $self->_get_tables_used_from_query_struct(%args);
+                     my $new_args = $self->_reparse_query(%args);
+                     if ( $new_args ) {
+                        return $self->_get_tables_used_from_query_struct(
+                           %$new_args);
+                     } 
+                     MKDEBUG && _d('Failed to disambiguate columns'); 
                   }
 
                   foreach my $joined_table ( @{$on_tables->{joined_tables}} ) {
@@ -4310,10 +4327,11 @@ sub _get_real_table_name {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($tables, $name) = @args{@required_args};
+   $name = lc $name;
 
    foreach my $table ( @$tables ) {
-      if ( $table->{tbl} eq $name
-           || ($table->{alias} || "") eq $name ) {
+      if ( lc($table->{tbl}) eq $name
+           || lc($table->{alias} || "") eq $name ) {
          MKDEBUG && _d("Real table name for", $name, "is", $table->{tbl});
          return $table->{tbl};
       }
@@ -4400,7 +4418,17 @@ sub _explain_query {
 
    $sql = "EXPLAIN EXTENDED $query";
    MKDEBUG && _d($dbh, $sql);
-   $dbh->do($sql);  # don't need the result
+   eval {
+      $dbh->do($sql);  # don't need the result
+   };
+   if ( $EVAL_ERROR ) {
+      if ( $EVAL_ERROR =~ m/No database/i ) {
+         MKDEBUG && _d($EVAL_ERROR);
+         push @{$self->{errors}}, 'NO_DB_SELECTED';
+         return;
+      }
+      die $EVAL_ERROR;
+   }
 
    $sql = "SHOW WARNINGS";
    MKDEBUG && _d($dbh, $sql);
@@ -4431,10 +4459,13 @@ sub _get_tables {
 sub _reparse_query {
    my ($self, %args) = @_;
    MKDEBUG && _d("Reparsing query with EXPLAIN EXTENDED");
-   $args{query}          = $self->_explain_query($args{query});
-   $args{query_struct}   = $self->{SQLParser}->parse($args{query});
+   my $new_query = $self->_explain_query($args{query});
+   if ( $new_query ) {
+      $args{query}        = $new_query;
+      $args{query_struct} = $self->{SQLParser}->parse($args{query});
+   }
    $args{query_reparsed} = 1;
-   return %args;
+   return \%args;
 }
 
 sub _d {
@@ -6219,6 +6250,7 @@ sub main {
                report_table_usage(
                   table_usage => $table_usage,
                   query_id    => $query_id,
+                  TableUsage  => $tu,
                   %common_modules,
                ); 
             };
@@ -6282,17 +6314,24 @@ sub main {
 # ###########################################################################
 sub report_table_usage {
    my ( %args ) = @_;
-   my @required_args = qw(table_usage query_id);
+   my @required_args = qw(table_usage query_id TableUsage);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($table_usage, $query_id) = @args{@required_args};
+   my ($table_usage, $query_id, $tu) = @args{@required_args};
    MKDEBUG && _d("Reporting table usage");
 
+   my $printed_errors = 0;
    my $target_tbl_num = 1;
    TABLE:
    foreach my $table ( @$table_usage ) {
       print "Query_id: $query_id." . ($target_tbl_num++) . "\n";
+
+      if ( !$printed_errors ) {
+         foreach my $error ( @{$tu->errors()} ) {
+            print "ERROR $error\n";
+         }
+      }
 
       USAGE:
       foreach my $usage ( @$table ) {
