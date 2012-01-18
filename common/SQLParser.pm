@@ -78,6 +78,21 @@ my $column_ident = qr/(?:
    (?:$ident_alias)?                                  # optional alias
 )/xo;
 
+my $function_ident = qr/
+   \b
+   (
+      \w+      # function name
+      \(       # opening parenthesis
+      [^\)]+   # function args, if any
+      \)       # closing parenthesis
+   )
+/x;
+
+my %ignore_function = (
+   INDEX => 1,
+   KEY   => 1,
+);
+
 # Sub: new
 #   Create a SQLParser object.
 #
@@ -511,6 +526,9 @@ sub parse_from {
    my $using_cols;
    ($from, $using_cols) = $self->remove_using_columns($from);
 
+   my $funcs;
+   ($from, $funcs) = $self->remove_functions($from);
+
    # Table references in a FROM clause are separated either by commas
    # (comma/theta join, implicit INNER join) or the JOIN keyword (ansi
    # join).  JOIN can be preceded by other keywords like LEFT, RIGHT,
@@ -551,8 +569,7 @@ sub parse_from {
          if ( $join->{condition} eq 'on' ) {
             # The value for ON can be, as the MySQL manual says, is just
             # like a WHERE clause.
-            my $where      = $self->parse_where($join_condition_value);
-            $join->{where} = $where; 
+            $join->{where} = $self->parse_where($join_condition_value, $funcs);
          }
          else { # USING
             # Although calling parse_columns() works, it's overkill.
@@ -718,7 +735,7 @@ sub parse_table_reference {
 # Invalid predicates, or valid ones that we can't parse,  will cause
 # the sub to die.
 sub parse_where {
-   my ( $self, $where ) = @_;
+   my ( $self, $where, $functions ) = @_;
    return unless $where;
    MKDEBUG && _d("Parsing WHERE", $where);
 
@@ -849,6 +866,11 @@ sub parse_where {
 
       if ( $val =~ m/NULL|TRUE|FALSE/i ) {
          $val = lc $val;
+      }
+
+      if ( $functions ) {
+         $col = shift @$functions if $col =~ m/__FUNC\d+__/;
+         $val = shift @$functions if $val =~ m/__FUNC\d+__/;
       }
 
       push @predicates, {
@@ -1203,6 +1225,27 @@ sub remove_using_columns {
    $from =~ s/$using/push @cols, $1; "USING ($#cols)"/eg;
    MKDEBUG && _d('FROM:', $from, Dumper(\@cols));
    return $from, \@cols;
+}
+
+sub replace_function {
+   my ($func, $funcs) = @_;
+   my ($func_name) = $func =~ m/^(\w+)/;
+   if ( !$ignore_function{uc $func_name} ) {
+      my $n = scalar @$funcs;
+      push @$funcs, $func;
+      return "__FUNC${n}__";
+   }
+   return $func;
+}
+
+sub remove_functions {
+   my ($self, $clause) = @_;
+   return unless $clause;
+   MKDEBUG && _d('Removing functions from clause:', $clause);
+   my @funcs;
+   $clause =~ s/$function_ident/replace_function($1, \@funcs)/eg;
+   MKDEBUG && _d('Function-stripped clause:', $clause, Dumper(\@funcs));
+   return $clause, \@funcs;
 }
 
 # Sub: parse_identifiers

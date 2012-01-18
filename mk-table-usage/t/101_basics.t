@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
-use Test::More tests => 9;
+use Test::More tests => 10;
 
 use MaatkitTest;
 shift @INC;  # our unshift (above)
@@ -75,6 +75,16 @@ ok(
       "$out/query001.txt",
    ),
    'Multi-column USING'
+);
+
+ok(
+   no_diff(
+      sub { mk_table_usage::main(@args, '--query',
+         "SELECT dt.datetime, MAX(re.pd) AS pd FROM d1.t1 t1a INNER JOIN d2.t2 t2a ON CONCAT(t1.a, ' ', t2.a) = t1.datetime INNER JOIN d3.t3 t3a ON t1a.c = t3a.c GROUP BY t1.datetime");
+      },
+      "$out/query002.txt",
+   ),
+   'Function in JOIN clause'
 );
 
 # ############################################################################

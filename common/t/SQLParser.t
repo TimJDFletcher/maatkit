@@ -9,7 +9,7 @@ BEGIN {
 use strict;
 use warnings FATAL => 'all';
 
-use Test::More tests => 143;
+use Test::More tests => 145;
 use English qw(-no_match_vars);
 
 use MaatkitTest;
@@ -2460,6 +2460,59 @@ is_deeply(
       },
    ],
    "JOIN USING (col1, col2)"
+);
+
+# Function in JOIN clause.
+my @stripped = $sp->remove_functions("d1.t1 AS t1a INNER JOIN d1.t2 AS t2a ON CONCAT(t1.a, ' ', t2.a) = t1.datetime");
+is_deeply(
+   \@stripped,
+   [
+      "d1.t1 AS t1a INNER JOIN d1.t2 AS t2a ON __FUNC0__ = t1.datetime",
+      ["CONCAT(t1.a, ' ', t2.a)"],
+   ],
+   "Remove CONCAT(a, ' ', b)"
+);
+
+$struct = $sp->parse("SELECT dt.datetime, MAX(re.pd) AS pd FROM d1.t1 t1a INNER JOIN d2.t2 t2a ON CONCAT(t1.a, ' ', t2.a) = t1.datetime INNER JOIN d3.t3 t3a ON t1a.c = t3a.c GROUP BY t1.datetime");
+
+is_deeply(
+   $struct->{from},
+   [
+      { db => 'd1', tbl => 't1', alias => 't1a', },
+      { db => 'd2', tbl => 't2', alias => 't2a',
+         join => {
+            ansi      => 1,
+            to        => 't1',
+            type      => 'inner',
+            condition => 'on',
+            where     => [
+               {
+                  predicate => undef,
+                  left_arg  => "CONCAT(t1.a, ' ', t2.a)",
+                  operator  => '=',
+                  right_arg => 't1.datetime',
+               },
+            ],
+         },
+      },
+      { db => 'd3', tbl => 't3', alias => 't3a',
+         join => {
+            ansi      => 1,
+            to        => 't2',
+            type      => 'inner',
+            condition => 'on',
+            where     => [
+               {
+                  predicate => undef,
+                  left_arg  => "t1a.c",
+                  operator  => '=',
+                  right_arg => "t3a.c",
+               },
+            ],
+         },
+      },
+   ],
+   "JOIN ON CONCAT('')"
 );
 
 # #############################################################################
