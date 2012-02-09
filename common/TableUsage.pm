@@ -106,7 +106,11 @@ sub get_table_usage {
    MKDEBUG && _d('Getting table access for',
       substr($query, 0, 100), (length $query > 100 ? '...' : ''));
 
-   $self->{errors} = [];
+   $self->{errors}          = [];
+   $self->{query_reparsed}  = 0;     # only explain extended once
+   $self->{ex_query_struct} = undef; # EXplain EXtended query struct
+   $self->{schemas}         = undef; # db->tbl->cols from ^
+   $self->{table_for}       = undef; # table alias from ^
 
    # Try t
    # simple queries, but it's probably cheaper to just do this than to try
@@ -232,11 +236,10 @@ sub _get_tables_used_from_query_struct {
          where   => $query_struct->{where},
       );
 
-      if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+      if ( $ambig && $self->{dbh} && !$self->{query_reparsed} ) {
          MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-         my $new_args = $self->_reparse_query(%args);
-         if ( $new_args ) {
-            return $self->_get_tables_used_from_query_struct(%$new_args);
+         if ( $self->_reparse_query(%args) ) {
+            return $self->_get_tables_used_from_query_struct(%args);
          } 
          MKDEBUG && _d('Failed to disambiguate columns');
       }
@@ -325,11 +328,10 @@ sub _get_tables_used_from_query_struct {
             columns => $query_struct->{columns},
          );
 
-         if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+         if ( $ambig && $self->{dbh} && !$self->{query_reparsed} ) {
             MKDEBUG && _d("Using EXPLAIN EXTENDED to disambiguate columns");
-            my $new_args = $self->_reparse_query(%args);
-            if ( $new_args ) {
-               return $self->_get_tables_used_from_query_struct(%$new_args);
+            if ( $self->_reparse_query(%args) ) {
+               return $self->_get_tables_used_from_query_struct(%args);
             } 
             MKDEBUG && _d('Failed to disambiguate columns');
          }
@@ -382,13 +384,11 @@ sub _get_tables_used_from_query_struct {
                   );
                   MKDEBUG && _d("JOIN ON tables:", Dumper($on_tables));
 
-                  if ( $ambig && $self->{dbh} && !$args{query_reparsed} ) {
+                  if ( $ambig && $self->{dbh} && !$self->{query_reparsed} ) {
                      MKDEBUG && _d("Using EXPLAIN EXTENDED",
                         "to disambiguate columns");
-                     my $new_args = $self->_reparse_query(%args);
-                     if ( $new_args ) {
-                        return $self->_get_tables_used_from_query_struct(
-                           %$new_args);
+                     if ( $self->_reparse_query(%args) ) {
+                        return $self->_get_tables_used_from_query_struct(%args);
                      } 
                      MKDEBUG && _d('Failed to disambiguate columns'); 
                   }
@@ -532,8 +532,20 @@ sub _get_tables_used_in_columns {
       # column is.
       MKDEBUG && _d(scalar @$tables, "table SELECT");
       my %seen;
+      my $colno = 0;
       COLUMN:
       foreach my $column ( @$columns ) {
+         MKDEBUG && _d('Getting table for column', Dumper($column));
+         if ( $column->{col} eq '*' && !$column->{tbl} ) {
+            MKDEBUG && _d('Ignoring FUNC(*) column');
+            $colno++;
+            next;
+         }
+         $column = $self->_ex_qualify_column(
+            col    => $column,
+            colno  => $colno,
+            n_cols => scalar @$columns,
+         );
          if ( !$column->{tbl} ) {
             MKDEBUG && _d("Column", $column->{col}, "is not table-qualified;",
                "and query has multiple tables; cannot determine its table");
@@ -546,6 +558,7 @@ sub _get_tables_used_in_columns {
             tbl => $column->{tbl},
          );
          push @tables, $table if $table && !$seen{$table}++;
+         $colno++;
       }
    }
 
@@ -587,7 +600,10 @@ sub _get_tables_used_in_where {
                'column',
                $cond->{$arg}
             );
-
+            $ident_struct = $self->_ex_qualify_column(
+               col       => $ident_struct,
+               where_arg => $arg,
+            );
             if ( !$ident_struct->{tbl} ) {
                if ( @$tables == 1 ) {
                   MKDEBUG && _d("Condition column is not table-qualified; ",
@@ -754,8 +770,12 @@ sub _qualify_table_name {
 
    my ($tbl, $db) = reverse split /[.]/, $table;
 
+   if ( $self->{ex_query_struct} ) {
+      $tables = $self->{ex_query_struct}->{from};
+   }
+
    # Always use real table names, not alias.
-   $tbl = $self->_get_real_table_name(%args, name => $tbl);
+   $tbl = $self->_get_real_table_name(tables => $tables, name => $tbl);
    return unless $tbl;  # shouldn't happen
 
    my $db_tbl;
@@ -815,7 +835,7 @@ sub _change_context {
 
 sub _explain_query {
    my ($self, $query, $db) = @_;
-   my $dbh  = $self->{dbh};
+   my $dbh = $self->{dbh};
 
    my $sql;
    if ( $db ) {
@@ -841,6 +861,7 @@ sub _explain_query {
    $sql = "SHOW WARNINGS";
    MKDEBUG && _d($dbh, $sql);
    my $warning = $dbh->selectrow_hashref($sql);
+   MKDEBUG && _d(Dumper($warning));
    if (    ($warning->{level} || "") !~ m/Note/i
         || ($warning->{code}  || 0)  != 1003 ) {
       die "EXPLAIN EXTENDED failed:\n"
@@ -867,14 +888,160 @@ sub _get_tables {
 
 sub _reparse_query {
    my ($self, %args) = @_;
+   my @required_args = qw(query query_struct);
+   my ($query, $query_struct) = @args{@required_args};
    MKDEBUG && _d("Reparsing query with EXPLAIN EXTENDED");
-   my $new_query = $self->_explain_query($args{query});
-   if ( $new_query ) {
-      $args{query}        = $new_query;
-      $args{query_struct} = $self->{SQLParser}->parse($args{query});
+
+   # Set this first so if there's an error we won't re-explain,
+   # re-error, and repeat.
+   $self->{query_reparsed} = 1;
+
+   # Can only EXPLAIN SELECT.
+   return unless uc($query_struct->{type}) eq 'SELECT';
+
+   my $new_query = $self->_explain_query($query);
+   return unless $new_query;  # failure
+
+   my $schemas         = {};
+   my $table_for       = $self->{table_for};
+   my $ex_query_struct = $self->{SQLParser}->parse($new_query);
+
+   map {
+      if ( $_->{db} && $_->{tbl} ) {
+         $schemas->{lc $_->{db}}->{lc $_->{tbl}} ||= {};
+         if ( $_->{alias} ) {
+            $table_for->{lc $_->{alias}} = {
+               db  => lc $_->{db},
+               tbl => lc $_->{tbl},
+            };
+         }
+      }
+   } @{$ex_query_struct->{from}};
+
+   map {
+      if ( $_->{db} && $_->{tbl} ) {
+         $schemas->{lc $_->{db}}->{lc $_->{tbl}}->{lc $_->{col}} = 1;
+      }
+   } @{$ex_query_struct->{columns}};
+
+   $self->{schemas}         = $schemas;
+   $self->{ex_query_struct} = $ex_query_struct;
+
+   return 1;  # success
+}
+
+sub _ex_qualify_column {
+   my ($self, %args) = @_;
+   my ($col, $colno, $n_cols, $where_arg) = @args{qw(col colno n_cols where_arg)};
+
+   # Don't have the EXPLAIN EXTENDED query struct.
+   return $col unless $self->{ex_query_struct};
+   my $ex = $self->{ex_query_struct};
+
+   MKDEBUG && _d('Qualifying column',$col->{col},'with EXPLAIN EXTENDED query');
+
+   # Nothing to qualify.
+   return unless $col;
+
+   # Column is already fully qualified.
+   return $col if $col->{db} && $col->{tbl};
+
+   my $colname = lc $col->{col};
+
+   if ( !$col->{tbl} ) {
+      if ( $where_arg ) {
+         MKDEBUG && _d('Searching WHERE conditions for column');
+         # A col in WHERE without a table must be unique in one table,
+         # so search for it in the WHERE conditions in the explained
+         # extended struct.
+         CONDITION:
+         foreach my $cond ( @{$ex->{where}} ) {
+            if ( defined $cond->{$where_arg}
+                 && $self->{SQLParser}->is_identifier($cond->{$where_arg}) ) {
+               my $ident_struct = $cond->{"${where_arg}_ident_struct"};
+               if ( !$ident_struct ) {
+                  $ident_struct = $self->{SQLParser}->parse_identifier(
+                     'column',
+                     $cond->{$where_arg},
+                  );
+                  $cond->{"${where_arg}_ident_struct"} = $ident_struct;
+               }
+               if ( lc($ident_struct->{col}) eq $colname ) {
+                  $col = $ident_struct;
+                  last CONDITION;
+               }
+            }
+         }
+      }
+      elsif ( defined $colno
+           && $ex->{columns}->[$colno]
+           && lc($ex->{columns}->[$colno]->{col}) eq $colname ) {
+         MKDEBUG && _d('Exact match by col name and number');
+         $col = $ex->{columns}->[$colno];
+      }
+      elsif ( defined $colno
+              && scalar @{$ex->{columns}} == $n_cols ) {
+         MKDEBUG && _d('Match by column number in CLIST');
+         $col = $ex->{columns}->[$colno];
+      }
+      else {
+         MKDEBUG && _d('Searching for unique column in every db.tbl');
+         my ($uniq_db, $uniq_tbl);
+         my $colcnt  = 0;
+         my $schemas = $self->{schemas};
+         DATABASE:
+         foreach my $db ( keys %$schemas ) {
+            TABLE:
+            foreach my $tbl ( keys %{$schemas->{$db}} ) {
+               if ( $schemas->{$db}->{$tbl}->{$colname} ) {
+                  $uniq_db  = $db;
+                  $uniq_tbl = $tbl;
+                  last DATABASE if ++$colcnt > 1;
+               }
+            }
+         }
+         if ( $colcnt == 1 ) {
+            $col->{db}  = $uniq_db;
+            $col->{tbl} = $uniq_tbl;
+         }
+      }
    }
-   $args{query_reparsed} = 1;
-   return \%args;
+
+   if ( !$col->{db} && $col->{tbl} ) {
+      MKDEBUG && _d('Column has table, needs db');
+      if ( my $real_tbl = $self->{table_for}->{lc $col->{tbl}} ) {
+         MKDEBUG && _d('Table is an alias');
+         $col->{db}  = $real_tbl->{db};
+         $col->{tbl} = $real_tbl->{tbl};
+      }
+      else {
+         MKDEBUG && _d('Searching for unique table in every db');
+         my $real_tbl = $self->_get_real_table_name(
+            tables => $ex->{from},
+            name   => $col->{tbl},
+         );
+         if ( $real_tbl ) {
+            $real_tbl = lc $real_tbl;
+            my $uniq_db;
+            my $dbcnt   = 0;
+            my $schemas = $self->{schemas};
+            DATABASE:
+            foreach my $db ( keys %$schemas ) {
+               if ( exists $schemas->{$db}->{$real_tbl} ) {
+                  $uniq_db  = $db;
+                  last DATABASE if ++$dbcnt > 1;
+               }
+            }
+            if ( $dbcnt == 1 ) {
+               $col->{db}  = $uniq_db;
+               $col->{tbl} = $real_tbl;
+            }
+         }
+      }
+   }
+
+   MKDEBUG && _d('Qualified column:', Dumper($col));
+   return $col;
 }
 
 sub _d {

@@ -725,7 +725,7 @@ SKIP: {
       ],
       "Disambiguate WHERE columns"
    );
-   
+
    test_get_table_usage(
       "select city_id, country from city, country where city.city_id>100 or country.country='China' limit 1",
       [
