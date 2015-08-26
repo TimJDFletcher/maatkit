@@ -1,0 +1,1 @@
+The Maatkit project has been replaced by Percona Toolkit. Please see https://launchpad.net/percona-toolkit.  To view the old project wiki, see TableOfContents. To view the old issue tracker, see [Issues](http://code.google.com/p/maatkit/issues/list). To view downloads, see [Downloads](http://code.google.com/p/maatkit/downloads/list).

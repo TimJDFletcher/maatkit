@@ -1,0 +1,3 @@
+[issues](http://code.google.com/p/maatkit/issues/list?q=label:Tool-mk_parallel_restore)
+
+This tool needs to be simplified down to its original purpose, which is simply to import data in multiple threads for speed.  Like [mk\_parallel\_dump](mk_parallel_dump.md), the code has proven to be buggy and hard to work with, but we simplified it tremendously.  One major issue is outstanding -- a bug with --fast-index -- but otherwise there doesn't seem to be much else to do.

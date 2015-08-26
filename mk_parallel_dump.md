@@ -1,0 +1,3 @@
+[issues](http://code.google.com/p/maatkit/issues/list?q=label:Tool-mk_parallel_dump)
+
+This tool got scattered functionality over time (views, triggers) that simply didn't work.  It pretended to be a backup tool, but was unreliable because of various problems such as the use of shell commands.  We removed that code and made it much simpler.  Then we reviewed the code and functionality, and identified a number of other things to solve.  We currently have sponsorship for some of these things and will probably work steadily on at least some of the items mentioned in the issue list.

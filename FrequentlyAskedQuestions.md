@@ -1,0 +1,2 @@
+  * Q: What happened to mk-audit?
+    * A: It was removed for good reasons.  See the [mailing list](http://groups.google.com/group/maatkit-discuss/browse_thread/thread/a59a0ccbb94d8039/).  You can get it from older releases, or you can try the tools in [Aspersa](http://code.google.com/p/aspersa/) instead.
